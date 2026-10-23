@@ -4,7 +4,9 @@
 
 **Goal:** 做一个 Windows 常驻托盘小工具：双击 Ctrl 在光标处弹出悬浮面板，显示 Codex 的 5 小时额度、本周额度、重置倒计时、额外点数。
 
-**Architecture:** 单个 .NET 8 WPF 进程。`CodexUsageReader` 从 `~/.codex/sessions/**/rollout-*.jsonl` 的**文件尾部**提取最后一次 `payload.rate_limits` 快照；`DoubleCtrlHook` / `ClickAwayHook` 两个 Win32 低级钩子只写标志位、由 UI 线程轮询；`PanelWindow` 用无边框置顶 + `WS_EX_NOACTIVATE` 渲染快照；`TrayManager` 负责常驻与开机自启。判定逻辑（解析、选窗规则、点击判定、文案格式化、位置换算）全部抽成纯函数，用 xUnit 覆盖；只有 Win32 壳与 XAML 走手动验收。
+**Architecture:** 单个 .NET 8 WPF 进程。`CodexUsageReader` 从 `~/.codex/sessions/**/rollout-*.jsonl` 的**文件尾部**提取最后一次 `payload.rate_limits` 快照；`DoubleCtrlHook` / `ClickAwayHook` 两个 Win32 低级钩子**在回调里把动作 Post 回 UI 线程**（不是轮询）；`PanelWindow` 用无边框置顶 + `WS_EX_NOACTIVATE` 渲染快照；`TrayManager` 负责常驻与开机自启。判定逻辑（解析、选窗规则、点击判定、文案格式化、位置换算）全部抽成纯函数，用 xUnit 覆盖；只有 Win32 壳与 XAML 走手动验收。
+
+**资源策略（第一优先级）：** 常驻进程的空闲代价必须接近零——**隐藏状态下没有任何定时器、没有后台线程、不读文件**；只有用户双击 Ctrl / 点托盘 / 点刷新时才发生一次尾读（≤ 256 KB）。面板可见的 10 秒内才启动 1 秒心跳，且心跳只更新三段倒计时文本，不重建可视树、不做 IO。内存目标：框架依赖发布、工作集 ≤ 80 MB（目标 60 MB）。
 
 **Tech Stack:** .NET 8 (`net8.0-windows`)、WPF、C# 12、xUnit、`Hardcodet.NotifyIcon.Wpf`（托盘）、`System.Drawing.Common`（托盘图标位图）
 
@@ -18,6 +20,13 @@
 - **禁止读取 `~/.codex/auth.json`**。只读 `~/.codex/sessions/**/rollout-*.jsonl`。
 - **隐私硬约束**：解析时只取 `payload.rate_limits` 子对象。异常/日志信息里只允许出现文件路径，**禁止**包含行内容——这些文件里有用户完整对话正文（实测单个文件 54 处 `input_text` 事件）。
 - NuGet 只允许两个：`Hardcodet.NotifyIcon.Wpf`、`System.Drawing.Common`。不引入其他包。
+- **资源硬约束（常驻工具，第一优先级）**：
+  - 隐藏状态下**禁止**存在任何 `DispatcherTimer` / `System.Timers.Timer` / `Thread` / 后台轮询循环。允许常驻的只有两个低级钩子和一个托盘图标。
+  - 禁止周期性后台刷新：只在用户唤出面板、点刷新按钮、点托盘菜单时读文件。
+  - 面板可见期间的 1 秒心跳只允许改文本属性，**禁止**每秒重设 `DataContext`（会导致整个可视树重建）。
+  - 尾读缓冲区用 `ArrayPool<byte>` 复用，禁止每次分配新数组。
+  - 托盘图标只在百分比变化时重画，禁止每次刷新都新建 `Bitmap` / `Icon`。
+  - 验收预算：空闲（面板隐藏）CPU 平均 **< 0.1%**、工作集 **≤ 80 MB**；面板可见 CPU **< 1%**；唤出到出数据 **< 150 ms**。
 - 界面文案中文。所有时间按本地时区显示，并在界面标注"北京时间"。
 - 提交身份取自 `E:\Viding\FDE-self-study\.qoder\env`（含 `GIT_AUTHOR_NAME/EMAIL`、`GIT_COMMITTER_NAME/EMAIL`）。**禁止**执行 `git config --global`、**禁止** `git config` 写任何身份。
 - **禁止未经用户明确同意执行 `git push`**。
@@ -47,11 +56,11 @@ cd "E:/Viding/tip page" && dotnet test CodexUsagePanel.sln --nologo
 | `src/CodexUsagePanel/Data/CodexUsageReader.cs` | 找文件 + 尾部窗口读取 + 重试 + 缓存节流 |
 | `src/CodexUsagePanel/Settings/AppSettings.cs` | `%APPDATA%\CodexUsagePanel\settings.json` 读写 |
 | `src/CodexUsagePanel/Input/CtrlTapDetector.cs` | 双击 Ctrl 判定（纯函数） |
-| `src/CodexUsagePanel/Input/DoubleCtrlHook.cs` | Win32 键盘低级钩子，只写标志位 |
+| `src/CodexUsagePanel/Input/DoubleCtrlHook.cs` | Win32 键盘低级钩子，命中后 Post 到 UI 线程 |
 | `src/CodexUsagePanel/Input/ClickAwayDetector.cs` | 点击是否落在面板外（纯函数） |
-| `src/CodexUsagePanel/Input/ClickAwayHook.cs` | Win32 鼠标低级钩子 |
+| `src/CodexUsagePanel/Input/ClickAwayHook.cs` | Win32 鼠标低级钩子，命中后 Post 到 UI 线程 |
 | `src/CodexUsagePanel/Input/NativeInterop.cs` | 所有 P/Invoke 声明 |
-| `src/CodexUsagePanel/Ui/PanelView.cs` | 快照 → 界面数据（纯函数） |
+| `src/CodexUsagePanel/Ui/PanelView.cs` | 快照 → 界面数据；时间相关属性走 INPC 增量更新 |
 | `src/CodexUsagePanel/Ui/PanelPositioner.cs` | 物理像素 → DIP 坐标（纯函数） |
 | `src/CodexUsagePanel/Ui/Theme.xaml` | 颜色/画刷资源 |
 | `src/CodexUsagePanel/Ui/PanelWindow.xaml(.cs)` | 无边框置顶窗口、计时器、自动隐藏 |
@@ -108,7 +117,16 @@ cd "E:/Viding/tip page" && rm -f src/CodexUsagePanel/MainWindow.xaml src/CodexUs
 </assembly>
 ```
 
-在 `CodexUsagePanel.csproj` 的 `<PropertyGroup>` 中加一行：`<ApplicationManifest>app.manifest</ApplicationManifest>`
+在 `CodexUsagePanel.csproj` 的 `<PropertyGroup>` 中加入以下几行（前一行是 DPI 清单，其余是常驻进程的内存策略）：
+
+```xml
+<ApplicationManifest>app.manifest</ApplicationManifest>
+<ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+<ServerGarbageCollection>false</ServerGarbageCollection>
+<TieredPGO>true</TieredPGO>
+```
+
+`ConcurrentGarbageCollection=false` 去掉后台 GC 线程（少一条常驻线程、少量内存），对每秒只分配几个字符串的负载没有吞吐代价；`ServerGarbageCollection=false` 明确用工作站 GC。
 
 - [ ] **Step 4: `App.xaml` 去掉 `StartupUri`（托盘启动，不自动开窗）**
 
@@ -602,6 +620,7 @@ Expected: 编译错误 `The name 'CodexUsageReader' does not exist`
 - [ ] **Step 3: 实现 `Data/CodexUsageReader.cs`（本任务只做找文件+尾部读取，缓存留给 Task 4）**
 
 ```csharp
+using System.Buffers;
 using System.Text;
 
 namespace CodexUsagePanel.Data;
@@ -707,21 +726,30 @@ public sealed class CodexUsageReader
                 if (take == 0) return [];
 
                 stream.Seek(length - take, SeekOrigin.Begin);
-                var buffer = new byte[take];
-                stream.ReadExactly(buffer, 0, take);
-                DiskReadCount++;
 
-                int start = 0;
-                if (!reachedStart)
+                // 复用池化缓冲，避免每次刷新把 256 KB（扩容时 4 MB）丢进 LOH
+                var buffer = ArrayPool<byte>.Shared.Rent(take);
+                try
                 {
-                    // 丢弃可能被截断的首行
-                    int newline = Array.IndexOf(buffer, (byte)'\n');
-                    if (newline < 0) return [];
-                    start = newline + 1;
-                }
+                    stream.ReadExactly(buffer, 0, take);
+                    DiskReadCount++;
 
-                var text = Encoding.UTF8.GetString(buffer, start, take - start);
-                return text.Split('\n');
+                    int start = 0;
+                    if (!reachedStart)
+                    {
+                        // 丢弃可能被截断的首行；必须限定在 take 范围内，池化数组可能更长
+                        int newline = Array.IndexOf(buffer, (byte)'\n', 0, take);
+                        if (newline < 0) return [];
+                        start = newline + 1;
+                    }
+
+                    var text = Encoding.UTF8.GetString(buffer, start, take - start);
+                    return text.Split('\n');
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
+                }
             }
             catch (IOException) when (attempt == 0)
             {
@@ -1124,7 +1152,7 @@ git -C "E:/Viding/tip page" commit -m "feat: 配置读写，损坏自动备份�
 
 **Interfaces:**
 - Consumes: 无
-- Produces: `CtrlTapDetector(int windowMs)`；`bool Feed(bool isDown, bool isRepeat, long nowMs)`。`DoubleCtrlHook(int windowMs, Func<bool> isPanelVisible)`；`Start()`、`Stop()`、`bool ConsumeToggle()`、`bool ConsumeEscape()`
+- Produces: `CtrlTapDetector(int windowMs)`；`bool Feed(bool isDown, bool isRepeat, long nowMs)`。`DoubleCtrlHook(int windowMs, Func<bool> isPanelVisible, Action onToggle, Action onEscape)`；`Start()`、`Stop()`。命中后由钩子自己 `Post` 到创建它时所在的 UI 线程，调用方不需要任何轮询。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -1386,19 +1414,21 @@ public sealed class DoubleCtrlHook : IDisposable
 {
     private readonly CtrlTapDetector _detector;
     private readonly Func<bool> _isPanelVisible;
+    private readonly Action _onToggle;
+    private readonly Action _onEscape;
+    private readonly SynchronizationContext? _uiContext;
     private readonly NativeInterop.LowLevelProc _callback;   // 必须持有引用，防止被 GC 回收
     private IntPtr _handle = IntPtr.Zero;
-    private int _toggleRequested;
-    private int _escapeRequested;
 
-    public DoubleCtrlHook(int windowMs, Func<bool> isPanelVisible)
+    public DoubleCtrlHook(int windowMs, Func<bool> isPanelVisible, Action onToggle, Action onEscape)
     {
         _detector = new CtrlTapDetector(windowMs);
         _isPanelVisible = isPanelVisible;
+        _onToggle = onToggle;
+        _onEscape = onEscape;
+        _uiContext = SynchronizationContext.Current;   // 在 UI 线程构造，后续用它 Post
         _callback = Handle;
     }
-
-    public bool IsRunning => _handle != IntPtr.Zero;
 
     public bool Start()
     {
@@ -1420,10 +1450,6 @@ public sealed class DoubleCtrlHook : IDisposable
         _handle = IntPtr.Zero;
     }
 
-    public bool ConsumeToggle() => Interlocked.Exchange(ref _toggleRequested, 0) == 1;
-
-    public bool ConsumeEscape() => Interlocked.Exchange(ref _escapeRequested, 0) == 1;
-
     public void Dispose() => Stop();
 
     private IntPtr Handle(int nCode, IntPtr wParam, IntPtr lParam)
@@ -1431,26 +1457,45 @@ public sealed class DoubleCtrlHook : IDisposable
         if (nCode >= 0)
         {
             bool isUp = wParam == NativeInterop.WM_KEYUP || wParam == NativeInterop.WM_SYSKEYUP;
-            var data = Marshal.PtrToStructure<NativeInterop.KBDLLHOOKSTRUCT>(lParam);
 
-            if (data.vkCode == NativeInterop.VK_CONTROL)
+            if (isUp || wParam == NativeInterop.WM_KEYDOWN || wParam == NativeInterop.WM_SYSKEYDOWN)
             {
-                if (_detector.Feed(isDown: !isUp, isRepeat: false, nowMs: Environment.TickCount64))
+                var data = Marshal.PtrToStructure<NativeInterop.KBDLLHOOKSTRUCT>(lParam);
+
+                if (data.vkCode == NativeInterop.VK_CONTROL)
                 {
-                    Interlocked.Exchange(ref _toggleRequested, 1);
+                    if (_detector.Feed(isDown: !isUp, isRepeat: false, nowMs: Environment.TickCount64))
+                    {
+                        Post(_onToggle);
+                    }
                 }
-            }
-            else if (data.vkCode == NativeInterop.VK_ESCAPE && !isUp && _isPanelVisible())
-            {
-                Interlocked.Exchange(ref _escapeRequested, 1);
+                else if (data.vkCode == NativeInterop.VK_ESCAPE && !isUp && _isPanelVisible())
+                {
+                    Post(_onEscape);
+                }
             }
         }
 
-        // 回调预算约 300ms，超时 Windows 会静默卸载钩子。这里不做任何 IO / UI 操作。
+        // 回调预算约 300ms，超时 Windows 会静默卸载钩子。这里只做 Post，不做 IO / UI。
         return NativeInterop.CallNextHookEx(_handle, nCode, wParam, lParam);
+    }
+
+    private void Post(Action action)
+    {
+        if (_uiContext is null)
+        {
+            action();
+            return;
+        }
+
+        _uiContext.Post(static state => ((Action)state!)(), action);
     }
 }
 ```
+
+**为什么不用轮询：** 低级钩子的回调本身就在安装钩子的线程（也就是 WPF 的 UI 线程）的消息循环里执行，所以可以直接 `Post` 回队列，下一个消息就被处理。这比 80 ms 轮询定时器快一个数量级，而且程序空闲时 CPU 占用严格为 0（轮询定时器每秒会唤醒 12.5 次）。`Post` 只排一个委托，回调本身仍然是微秒级。
+
+**每次按键的代价：** 键盘钩子会对全系统的每一次按键调用一次回调，开销是一次结构体封送加两个整数比较（微秒级），不分配堆内存。这是全局"双击 Ctrl"热键无法避免的成本；如果以后改成 `RegisterHotKey` 的组合键，可以完全去掉这条路径。
 
 - [ ] **Step 7: 编译并跑全部测试**
 
@@ -1478,7 +1523,7 @@ git -C "E:/Viding/tip page" commit -m "feat: 双击 Ctrl 判定与全局键盘�
 
 **Interfaces:**
 - Consumes: `NativeInterop`
-- Produces: `ClickAwayDetector.IsOutside(int x, int y, int left, int top, int right, int bottom) -> bool`；`ClickAwayHook(Func<(int Left,int Top,int Right,int Bottom)?> boundsProvider)`、`Start()`、`Stop()`、`bool ConsumeClickAway()`
+- Produces: `ClickAwayDetector.IsOutside(int x, int y, int left, int top, int right, int bottom) -> bool`；`ClickAwayHook(Func<(int Left,int Top,int Right,int Bottom)?> boundsProvider, Action onClickAway)`、`Start()`、`Stop()`。命中后由钩子自己 `Post` 到 UI 线程。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -1543,17 +1588,18 @@ namespace CodexUsagePanel.Input;
 public sealed class ClickAwayHook : IDisposable
 {
     private readonly Func<(int Left, int Top, int Right, int Bottom)?> _boundsProvider;
+    private readonly Action _onClickAway;
+    private readonly SynchronizationContext? _uiContext;
     private readonly NativeInterop.LowLevelProc _callback;
     private IntPtr _handle = IntPtr.Zero;
-    private int _clickAwayRequested;
 
-    public ClickAwayHook(Func<(int Left, int Top, int Right, int Bottom)?> boundsProvider)
+    public ClickAwayHook(Func<(int Left, int Top, int Right, int Bottom)?> boundsProvider, Action onClickAway)
     {
         _boundsProvider = boundsProvider;
+        _onClickAway = onClickAway;
+        _uiContext = SynchronizationContext.Current;   // 在 UI 线程构造
         _callback = Handle;
     }
-
-    public bool IsRunning => _handle != IntPtr.Zero;
 
     public void Start()
     {
@@ -1572,8 +1618,6 @@ public sealed class ClickAwayHook : IDisposable
         _handle = IntPtr.Zero;
     }
 
-    public bool ConsumeClickAway() => Interlocked.Exchange(ref _clickAwayRequested, 0) == 1;
-
     public void Dispose() => Stop();
 
     private IntPtr Handle(int nCode, IntPtr wParam, IntPtr lParam)
@@ -1591,7 +1635,8 @@ public sealed class ClickAwayHook : IDisposable
                     var data = Marshal.PtrToStructure<NativeInterop.MSLLHOOKSTRUCT>(lParam);
                     if (ClickAwayDetector.IsOutside(data.pt.X, data.pt.Y, b.Left, b.Top, b.Right, b.Bottom))
                     {
-                        Interlocked.Exchange(ref _clickAwayRequested, 1);
+                        if (_uiContext is null) _onClickAway();
+                        else _uiContext.Post(static state => ((Action)state!)(), _onClickAway);
                     }
                 }
             }
@@ -1610,7 +1655,7 @@ cd "E:/Viding/tip page" && dotnet build CodexUsagePanel.sln --nologo && dotnet t
 
 Expected: 构建成功；`Passed! - Failed: 0`
 
-- [ ] **Step 8: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
 set -a && . "E:/Viding/FDE-self-study/.qoder/env" && set +a && \
@@ -1628,7 +1673,7 @@ git -C "E:/Viding/tip page" commit -m "feat: 点击面板外关闭的判定与�
 
 **Interfaces:**
 - Consumes: `UsageSnapshot`、`UsageWindow`、`AppSettings`
-- Produces: `CardView`、`BarView`、`PanelView`、`static PanelView.Build(UsageSnapshot? snapshot, DateTime now, string planLabel)`
+- Produces: `CardView`（`INotifyPropertyChanged`，含 `Tick(DateTime)`）、`BarView`、`PanelView`（`INotifyPropertyChanged`，含 `Tick(DateTime)`）、`static PanelView.Build(UsageSnapshot? snapshot, DateTime now, string planLabel)`、`internal static PanelView.FormatCountdown(TimeSpan)`
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -1781,6 +1826,58 @@ public class PanelViewTests
         Assert.Single(view.Cards);
         Assert.Equal(1, view.CardColumns);
     }
+
+    [Fact]
+    public void TickUpdatesOnlyTheTimeTexts()
+    {
+        var view = PanelView.Build(Snapshot(49, 32, Now), Now, "PLUS");
+        var card = view.Cards[0];
+
+        var changed = new List<string?>();
+        view.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+        card.PropertyChanged += (_, e) => changed.Add("Card." + e.PropertyName);
+
+        view.Tick(Now.AddMinutes(1));
+
+        Assert.Equal("17:18", view.Clock);
+        Assert.Equal("1小时 8分", card.Countdown);
+        Assert.Equal("1 分钟前更新", view.UpdatedLabel);
+        Assert.Equal(new[] { "Clock", "UpdatedLabel", "Card.Countdown" }, changed);
+    }
+
+    [Fact]
+    public void TickWithinTheSameMinuteRaisesNoChangeNotifications()
+    {
+        var view = PanelView.Build(Snapshot(49, 32, Now), Now, "PLUS");
+        int raised = 0;
+        view.PropertyChanged += (_, _) => raised++;
+        view.Cards[0].PropertyChanged += (_, _) => raised++;
+
+        view.Tick(Now.AddMilliseconds(500));
+
+        Assert.Equal(0, raised);
+    }
+
+    [Fact]
+    public void CountdownRoundsUpSoItDoesNotDropASecondAfterOpening()
+    {
+        var view = PanelView.Build(Snapshot(49, 32, Now), Now, "PLUS");
+
+        view.Tick(Now.AddSeconds(1));
+
+        Assert.Equal("1小时 9分", view.Cards[0].Countdown);
+    }
+
+    [Fact]
+    public void TickOnEmptyStateOnlyMovesTheClock()
+    {
+        var view = PanelView.Build(null, Now, "PLUS");
+        view.Tick(Now.AddMinutes(1));
+
+        Assert.Equal("17:18", view.Clock);
+        Assert.Equal(string.Empty, view.UpdatedLabel);
+        Assert.Empty(view.Cards);
+    }
 }
 ```
 
@@ -1795,38 +1892,172 @@ Expected: 编译错误 `The type or namespace name 'PanelView' could not be foun
 - [ ] **Step 3: 实现 `Ui/PanelView.cs`**
 
 ```csharp
+using System.ComponentModel;
 using CodexUsagePanel.Data;
 
 namespace CodexUsagePanel.Ui;
 
 public sealed record BarView(bool On, string AccentKey);
 
-public sealed record CardView(
-    string Title,
-    string Code,
-    string Icon,
-    int RemainingPercent,
-    string UsedLabel,
-    string AccentKey,
-    IReadOnlyList<BarView> Bars,
-    string Countdown,
-    string ResetsAtText);
-
-public sealed record PanelView(
-    bool HasData,
-    bool HasPlanBadge,
-    string PlanLabel,
-    string TodayLabel,
-    string Clock,
-    bool IsSynchronised,
-    string SyncLabel,
-    string SyncAccentKey,
-    string UpdatedLabel,
-    string CreditsLabel,
-    string EmptyHint,
-    IReadOnlyList<CardView> Cards)
+public sealed class CardView : INotifyPropertyChanged
 {
+    private string _countdown;
+
+    public CardView(
+        string title,
+        string code,
+        string icon,
+        int remainingPercent,
+        string usedLabel,
+        string accentKey,
+        IReadOnlyList<BarView> bars,
+        string countdown,
+        string resetsAtText,
+        long resetsAtUnixSeconds)
+    {
+        Title = title;
+        Code = code;
+        Icon = icon;
+        RemainingPercent = remainingPercent;
+        UsedLabel = usedLabel;
+        AccentKey = accentKey;
+        Bars = bars;
+        _countdown = countdown;
+        ResetsAtText = resetsAtText;
+        ResetsAtUnixSeconds = resetsAtUnixSeconds;
+    }
+
+    public string Title { get; }
+
+    public string Code { get; }
+
+    public string Icon { get; }
+
+    public int RemainingPercent { get; }
+
+    public string UsedLabel { get; }
+
+    public string AccentKey { get; }
+
+    public IReadOnlyList<BarView> Bars { get; }
+
+    public string ResetsAtText { get; }
+
+    public long ResetsAtUnixSeconds { get; }
+
+    public string Countdown
+    {
+        get => _countdown;
+        private set
+        {
+            if (_countdown == value) return;
+            _countdown = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Countdown)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    // 每秒只改这一段文本；段数、百分比、配色都不动，避免重建可视树
+    public void Tick(DateTime now)
+    {
+        var resetAt = DateTimeOffset.FromUnixTimeSeconds(ResetsAtUnixSeconds).LocalDateTime;
+        Countdown = PanelView.FormatCountdown(resetAt - now);
+    }
+}
+
+public sealed class PanelView : INotifyPropertyChanged
+{
+    private string _clock;
+    private bool _isSynchronised;
+    private string _syncLabel;
+    private string _syncAccentKey;
+    private string _updatedLabel;
+
+    public PanelView(
+        bool hasData,
+        bool hasPlanBadge,
+        string planLabel,
+        string todayLabel,
+        string clock,
+        bool isSynchronised,
+        string syncLabel,
+        string syncAccentKey,
+        string updatedLabel,
+        string creditsLabel,
+        string emptyHint,
+        IReadOnlyList<CardView> cards,
+        DateTime writtenAt)
+    {
+        HasData = hasData;
+        HasPlanBadge = hasPlanBadge;
+        PlanLabel = planLabel;
+        TodayLabel = todayLabel;
+        _clock = clock;
+        _isSynchronised = isSynchronised;
+        _syncLabel = syncLabel;
+        _syncAccentKey = syncAccentKey;
+        _updatedLabel = updatedLabel;
+        CreditsLabel = creditsLabel;
+        EmptyHint = emptyHint;
+        Cards = cards;
+        WrittenAt = writtenAt;
+    }
+
+    public bool HasData { get; }
+
+    public bool HasPlanBadge { get; }
+
+    public string PlanLabel { get; }
+
+    public string TodayLabel { get; }
+
+    public string CreditsLabel { get; }
+
+    public string EmptyHint { get; }
+
+    public IReadOnlyList<CardView> Cards { get; }
+
+    public DateTime WrittenAt { get; }
+
     public int CardColumns => Cards.Count;
+
+    public string Clock { get => _clock; private set => Set(ref _clock, value, nameof(Clock)); }
+
+    public bool IsSynchronised { get => _isSynchronised; private set => Set(ref _isSynchronised, value, nameof(IsSynchronised)); }
+
+    public string SyncLabel { get => _syncLabel; private set => Set(ref _syncLabel, value, nameof(SyncLabel)); }
+
+    public string SyncAccentKey { get => _syncAccentKey; private set => Set(ref _syncAccentKey, value, nameof(SyncAccentKey)); }
+
+    public string UpdatedLabel { get => _updatedLabel; private set => Set(ref _updatedLabel, value, nameof(UpdatedLabel)); }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    // 面板可见时的 1 秒心跳：只发上面几个属性的变更通知，不碰 DataContext、不读文件
+    public void Tick(DateTime now)
+    {
+        Clock = now.ToString("HH:mm");
+
+        if (!HasData) return;
+
+        var age = now - WrittenAt;
+        bool synchronised = age.TotalSeconds <= 120;
+
+        IsSynchronised = synchronised;
+        SyncLabel = synchronised ? "已同步" : "快照滞后";
+        SyncAccentKey = synchronised ? "Mint" : "Muted";
+        UpdatedLabel = FormatAge(age);
+
+        foreach (var card in Cards) card.Tick(now);
+    }
+
+    private void Set<T>(ref T field, T value, string propertyName)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value)) return;
+        field = value;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
 
     private static readonly string[] WeekdayNames = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
@@ -1839,18 +2070,19 @@ public sealed record PanelView(
         if (snapshot is null)
         {
             return new PanelView(
-                HasData: false,
-                HasPlanBadge: badge,
-                PlanLabel: planLabel,
-                TodayLabel: today,
-                Clock: clock,
-                IsSynchronised: false,
-                SyncLabel: string.Empty,
-                SyncAccentKey: "Muted",
-                UpdatedLabel: string.Empty,
-                CreditsLabel: "0",
-                EmptyHint: "未检测到 Codex 用量数据\n期望路径：%USERPROFILE%\\.codex\\sessions",
-                Cards: []);
+                hasData: false,
+                hasPlanBadge: badge,
+                planLabel: planLabel,
+                todayLabel: today,
+                clock: clock,
+                isSynchronised: false,
+                syncLabel: string.Empty,
+                syncAccentKey: "Muted",
+                updatedLabel: string.Empty,
+                creditsLabel: "0",
+                emptyHint: "未检测到 Codex 用量数据\n期望路径：%USERPROFILE%\\.codex\\sessions",
+                cards: [],
+                writtenAt: now);
         }
 
         var cards = new List<CardView>();
@@ -1867,18 +2099,19 @@ public sealed record PanelView(
         bool synchronised = age.TotalSeconds <= 120;
 
         return new PanelView(
-            HasData: true,
-            HasPlanBadge: badge,
-            PlanLabel: planLabel,
-            TodayLabel: today,
-            Clock: clock,
-            IsSynchronised: synchronised,
-            SyncLabel: synchronised ? "已同步" : "快照滞后",
-            SyncAccentKey: synchronised ? "Mint" : "Muted",
-            UpdatedLabel: FormatAge(age),
-            CreditsLabel: string.IsNullOrWhiteSpace(snapshot.CreditsBalance) ? "0" : snapshot.CreditsBalance,
-            EmptyHint: string.Empty,
-            Cards: cards);
+            hasData: true,
+            hasPlanBadge: badge,
+            planLabel: planLabel,
+            todayLabel: today,
+            clock: clock,
+            isSynchronised: synchronised,
+            syncLabel: synchronised ? "已同步" : "快照滞后",
+            syncAccentKey: synchronised ? "Mint" : "Muted",
+            updatedLabel: FormatAge(age),
+            creditsLabel: string.IsNullOrWhiteSpace(snapshot.CreditsBalance) ? "0" : snapshot.CreditsBalance,
+            emptyHint: string.Empty,
+            cards: cards,
+            writtenAt: snapshot.FileWrittenAt);
     }
 
     private static CardView BuildCard(UsageWindow window, DateTime now, string slotAccent)
@@ -1901,29 +2134,32 @@ public sealed record PanelView(
         var remaining = resetAt - now;
 
         return new CardView(
-            Title: title,
-            Code: code,
-            Icon: window.IsWeekly ? "\uE787" : "\uE823",
-            RemainingPercent: 100 - used,
-            UsedLabel: $"已用 {used}%",
-            AccentKey: accent,
-            Bars: bars,
-            Countdown: FormatCountdown(remaining),
-            ResetsAtText: $"{resetAt:yyyy/MM/dd} {WeekdayNames[(int)resetAt.DayOfWeek]} {resetAt:HH:mm}");
+            title: title,
+            code: code,
+            icon: window.IsWeekly ? "\uE787" : "\uE823",
+            remainingPercent: 100 - used,
+            usedLabel: $"已用 {used}%",
+            accentKey: accent,
+            bars: bars,
+            countdown: FormatCountdown(remaining),
+            resetsAtText: $"{resetAt:yyyy/MM/dd} {WeekdayNames[(int)resetAt.DayOfWeek]} {resetAt:HH:mm}",
+            resetsAtUnixSeconds: window.ResetsAtUnixSeconds);
     }
 
-    private static string FormatCountdown(TimeSpan remaining)
+    internal static string FormatCountdown(TimeSpan remaining)
     {
         if (remaining.TotalSeconds <= 0) return "即将重置";
+        if (remaining.TotalSeconds < 60) return "不足 1 分钟";
 
-        int days = (int)remaining.TotalDays;
-        int hours = remaining.Hours;
-        int minutes = remaining.Minutes;
+        // 向上取整到分钟：否则弹出后 1 秒计数就会跳掉一整分钟
+        int totalMinutes = (int)Math.Ceiling(remaining.TotalSeconds / 60.0);
+        int days = totalMinutes / (24 * 60);
+        int hours = totalMinutes % (24 * 60) / 60;
+        int minutes = totalMinutes % 60;
 
         if (days > 0) return $"{days}天 {hours}小时 {minutes}分";
         if (hours > 0) return $"{hours}小时 {minutes}分";
-        if (minutes > 0) return $"{minutes} 分钟";
-        return "不足 1 分钟";
+        return $"{minutes} 分钟";
     }
 
     private static string FormatAge(TimeSpan age)
@@ -1942,7 +2178,7 @@ public sealed record PanelView(
 cd "E:/Viding/tip page" && dotnet test CodexUsagePanel.sln --nologo --filter "FullyQualifiedName~PanelViewTests"
 ```
 
-Expected: `Passed! - Failed: 0, Passed: 19`
+Expected: `Passed! - Failed: 0, Passed: 19`（16 个 `[Fact]` + 1 个 3 用例的 `[Theory]`）
 
 - [ ] **Step 5: 提交**
 
@@ -2446,16 +2682,18 @@ public partial class PanelWindow : Window
     private readonly DispatcherTimer _tick;
     private readonly Action _onRefresh;
     private readonly Action _onOpenSettings;
+    private readonly Action<DateTime> _onTimeTick;
     private int _autoHideSeconds;
     private DateTime _shownAt;
 
-    public PanelWindow(Action onRefresh, Action onOpenSettings)
+    public PanelWindow(Action onRefresh, Action onOpenSettings, Action<DateTime> onTimeTick)
     {
         InitializeComponent();
         _onRefresh = onRefresh;
         _onOpenSettings = onOpenSettings;
+        _onTimeTick = onTimeTick;
 
-        // 只在面板可见时跑，避免常驻空转
+        // 只在面板可见时跑，避免常驻空转（隐藏时由 HidePanel 显式 Stop）
         _tick = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromSeconds(1) };
         _tick.Tick += OnTick;
     }
@@ -2522,6 +2760,9 @@ public partial class PanelWindow : Window
 
     private void OnTick(object? sender, EventArgs e)
     {
+        // 只把新的时间交给视图做属性级更新；不重设 DataContext
+        _onTimeTick(DateTime.Now);
+
         if ((DateTime.UtcNow - _shownAt).TotalSeconds >= _autoHideSeconds) HidePanel();
     }
 
@@ -2558,7 +2799,7 @@ git -C "E:/Viding/tip page" commit -m "feat: 无边框置顶面板、主题与�
 
 **Interfaces:**
 - Consumes: `CodexUsageReader`、`AppSettings`、`DoubleCtrlHook`、`ClickAwayHook`、`PanelWindow`、`PanelView`
-- Produces: `AutoStart.BuildCommand(string exePath) -> string`、`AutoStart.IsEnabled()`、`AutoStart.Set(bool enabled, string exePath)`；`TrayManager`（构造入参 `Action showPanel`、`Action exit`）
+- Produces: `AutoStart.BuildCommand(string exePath) -> string`、`AutoStart.IsEnabled()`、`AutoStart.Set(bool enabled, string exePath)`；`TrayManager`（构造入参 `Action showPanel`、`Action exit`、`Action togglePause`、`Func<bool> isPaused`、`Func<bool> autoStartEnabled`，方法 `UpdateIcon(UsageSnapshot?)`）。组装完成的进程常驻物只有：托盘图标 + 两个低级钩子 + 一个隐藏窗口，**没有定时器**。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -2668,6 +2909,7 @@ public sealed class TrayManager : IDisposable
     private readonly MenuItem _autoStartItem;
     private readonly MenuItem _pauseItem;
     private readonly Action _onTogglePause;
+    private int _lastIconUsed;
 
     public TrayManager(Action showPanel, Action exit, Action togglePause, Func<bool> isPaused, Func<bool> autoStartEnabled)
     {
@@ -2714,6 +2956,11 @@ public sealed class TrayManager : IDisposable
     public void UpdateIcon(UsageSnapshot? snapshot)
     {
         int used = snapshot?.Primary?.UsedPercentRounded ?? 0;
+
+        // 百分比没变就不重画：避免每次唤出都新建 Bitmap + HICON 并触发 Shell 重绘
+        if (used == _lastIconUsed) return;
+        _lastIconUsed = used;
+
         var previous = _icon.Icon;
         _icon.Icon = BuildIcon(used);
         previous?.Dispose();
@@ -2761,7 +3008,6 @@ public sealed class TrayManager : IDisposable
 ```csharp
 using System.IO;
 using System.Windows;
-using System.Windows.Threading;
 using CodexUsagePanel.Data;
 using CodexUsagePanel.Input;
 using CodexUsagePanel.Settings;
@@ -2780,6 +3026,7 @@ public partial class App : Application
     private ClickAwayHook _mouseHook = null!;
     private PanelWindow _panel = null!;
     private TrayManager _tray = null!;
+    private PanelView? _currentView;
     private bool _hotkeyPaused;
 
     protected override void OnStartup(StartupEventArgs e)
@@ -2801,10 +3048,15 @@ public partial class App : Application
             "sessions");
 
         _reader = new CodexUsageReader(sessionsRoot, TimeSpan.FromSeconds(_settings.RefreshThrottleSeconds));
-        _panel = new PanelWindow(onRefresh: RefreshNow, onOpenSettings: OpenSettingsFolder);
+        _panel = new PanelWindow(onRefresh: RefreshNow, onOpenSettings: OpenSettingsFolder, onTimeTick: OnTimeTick);
 
-        _mouseHook = new ClickAwayHook(() => _panel.CurrentBoundsPhysical);
-        _keyboardHook = new DoubleCtrlHook(_settings.DoubleCtrlWindowMs, () => _panel.IsPanelVisible);
+        // 两个钩子都在 UI 线程构造，内部会用 SynchronizationContext.Current 把动作 Post 回来
+        _mouseHook = new ClickAwayHook(() => _panel.CurrentBoundsPhysical, onClickAway: HidePanel);
+        _keyboardHook = new DoubleCtrlHook(
+            _settings.DoubleCtrlWindowMs,
+            isPanelVisible: () => _panel.IsPanelVisible,
+            onToggle: TogglePanel,
+            onEscape: HidePanel);
 
         _tray = new TrayManager(
             showPanel: ShowPanel,
@@ -2818,32 +3070,24 @@ public partial class App : Application
             _tray.ShowHotkeyWarning();
         }
 
-        var timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(80) };
-        timer.Tick += OnPoll;
-        timer.Start();
-
-        RefreshTrayIcon();
+        // 启动时读一次，让托盘图标一开始就反映当前用量；之后不再有任何后台定时器
+        _tray.UpdateIcon(_reader.Read());
     }
 
-    private void OnPoll(object? sender, EventArgs e)
+    private void TogglePanel()
     {
-        if (_keyboardHook.IsRunning && _keyboardHook.ConsumeToggle())
-        {
-            if (_panel.IsPanelVisible) HidePanel();
-            else ShowPanel();
-        }
-
-        if (_panel.IsPanelVisible && _keyboardHook.ConsumeEscape()) HidePanel();
-
-        if (_panel.IsPanelVisible && _mouseHook.ConsumeClickAway()) HidePanel();
+        if (_panel.IsPanelVisible) HidePanel();
+        else ShowPanel();
     }
 
     private void ShowPanel()
     {
-        var snapshot = _reader.Read();
-        _panel.ShowPanel(PanelView.Build(snapshot, DateTime.Now, _settings.PlanLabel), _settings.AutoHideSeconds);
+        var snapshot = _reader.Read();   // 15 秒节流，命中缓存时不碰磁盘
+        var view = PanelView.Build(snapshot, DateTime.Now, _settings.PlanLabel);
+        _currentView = view;
+        _panel.ShowPanel(view, _settings.AutoHideSeconds);
         _mouseHook.Start();
-        RefreshTrayIcon();
+        _tray.UpdateIcon(snapshot);
     }
 
     private void HidePanel()
@@ -2852,19 +3096,18 @@ public partial class App : Application
         _mouseHook.Stop();
     }
 
+    private void OnTimeTick(DateTime now) => _currentView?.Tick(now);
+
     private void RefreshNow()
     {
         _reader.InvalidateCache();
         var snapshot = _reader.Read();
-        RefreshTrayIcon();
+        var view = PanelView.Build(snapshot, DateTime.Now, _settings.PlanLabel);
+        _currentView = view;
 
-        if (_panel.IsPanelVisible)
-        {
-            _panel.Refresh(PanelView.Build(snapshot, DateTime.Now, _settings.PlanLabel));
-        }
+        if (_panel.IsPanelVisible) _panel.Refresh(view);
+        _tray.UpdateIcon(snapshot);
     }
-
-    private void RefreshTrayIcon() => _tray.UpdateIcon(_reader.Read());
 
     private void TogglePause()
     {
@@ -2974,10 +3217,19 @@ git -C "E:/Viding/tip page" commit -m "feat: 托盘常驻、开机自启、单�
 - 额度是 Codex 上次请求时写入的快照，长时间不用 Codex 会滞后，界面会显示"快照滞后"。
 - 快速连按 Ctrl（例如连打 Ctrl+C）可能误触发，托盘菜单可临时暂停热键。
 
+## 资源占用
+
+常驻代价按"接近零"设计：
+
+- 面板隐藏时没有任何定时器、后台线程或轮询循环，CPU 占用为 0；
+- 只有双击 Ctrl、点托盘、点刷新按钮时才读一次 session 文件尾部（通常 256 KB）；
+- 面板可见期间每秒只刷新三段倒计时文本，不重建界面、不读文件；
+- 托盘图标只在百分比变化时重画。
+
 ## 构建
 
 ```bash
-dotnet publish src/CodexUsagePanel -c Release -r win-x64 --self-contained false
+dotnet publish src/CodexUsagePanel -c Release -r win-x64 --self-contained false -p:PublishReadyToRun=true
 ```
 ```
 
@@ -2985,10 +3237,12 @@ dotnet publish src/CodexUsagePanel -c Release -r win-x64 --self-contained false
 
 ```bash
 cd "E:/Viding/tip page" && \
-dotnet publish src/CodexUsagePanel -c Release -r win-x64 --self-contained false -o publish
+dotnet publish src/CodexUsagePanel -c Release -r win-x64 --self-contained false -p:PublishReadyToRun=true -o publish
 ```
 
 Expected: `publish/CodexUsagePanel.exe` 存在
+
+`PublishReadyToRun=true` 把 IL 预编译成原生代码，减少启动时的 JIT 线程与 CPU 峰值；代价是 publish 体积变大，内存占用基本不变。框架依赖发布依赖机器上已装的 .NET 8 Desktop Runtime（开发机装 SDK 时已包含）。
 
 - [ ] **Step 3: 按 spec §8.2 逐条手动验收**
 
@@ -3004,9 +3258,38 @@ Expected: `publish/CodexUsagePanel.exe` 存在
 - [ ] 托盘四项菜单均可用；"暂停全局热键"后双击 Ctrl 无反应
 - [ ] 开机自启勾选后重启仍在；取消勾选后注册表项消失
 - [ ] 重命名 `~/.codex/sessions` 后面板显示无数据文案而非崩溃，改回后恢复正常
-- [ ] 任务管理器：常驻内存 < 60 MB；面板弹出到出数据 < 150 ms
+- [ ] 面板弹出到出数据 < 150 ms（秒表或肉眼无等待感）
 
-- [ ] **Step 4: 提交**
+- [ ] **Step 4: 资源占用验收（本工具的第一优先级指标）**
+
+先启动发布版、把面板收起，静置 60 秒让工作集稳定，然后连续采样两次（间隔 60 秒）：
+
+```bash
+powershell -NoProfile -Command "$p = Get-Process CodexUsagePanel; \
+$ws = $p.WorkingSet64/1MB; $cpu = $p.CPU; \
+'第 1 次: {0:N1} MB 工作集, CPU {1:N3}s' -f $ws, $cpu; \
+Start-Sleep -Seconds 60; \
+$p.Refresh(); \
+'第 2 次: {0:N1} MB 工作集, CPU {1:N3}s' -f ($p.WorkingSet64/1MB), $p.CPU"
+```
+
+判定标准：
+
+| 指标 | 预算 |
+|---|---|
+| 60 秒内 CPU 增量 | < 0.06 s（平均 < 0.1%） |
+| 工作集（面板隐藏） | ≤ 80 MB |
+| 面板可见时 CPU | < 1%（任务管理器观察即可） |
+
+再连续唤出 / 收起 20 次，然后每 20 秒采一次句柄数，共 3 次：
+
+```bash
+powershell -NoProfile -Command "1..3 | ForEach-Object { (Get-Process CodexUsagePanel).HandleCount; Start-Sleep -Seconds 20 }"
+```
+
+三次结果波动应 < 50 且无单调上升（单调上升说明 `Icon` / `HICON` 或窗口句柄泄漏）。若工作集超过 80 MB，先检查是否误留了周期定时器（隐藏状态下 CPU 应为 0）以及是否每次刷新都重设了 `DataContext`。
+
+- [ ] **Step 5: 提交**
 
 ```bash
 set -a && . "E:/Viding/FDE-self-study/.qoder/env" && set +a && \
@@ -3014,7 +3297,7 @@ git -C "E:/Viding/tip page" add README.md && \
 git -C "E:/Viding/tip page" commit -m "docs: 使用说明与已知限制"
 ```
 
-- [ ] **Step 5: 向用户报告完成，询问是否推送到远端**
+- [ ] **Step 6: 向用户报告完成，询问是否推送到远端**
 
 **不要自行 `git push`。** 询问用户：
 
@@ -3030,3 +3313,8 @@ git -C "E:/Viding/tip page" commit -m "docs: 使用说明与已知限制"
 4. **§8.1 测试 fixture**：改为运行时在临时目录生成，不把 4 MB 级别 fixture 提交进仓库。
 5. **新增单实例互斥**：`Local\CodexUsagePanel.SingleInstance`，避免开机自启叠加手动启动时挂两个键盘钩子。
 6. **§6 额外点数**：`credits.balance` 可能为 `null`（实测），此时显示 `0`。
+7. **§4.2 / §4.3 钩子改为事件驱动（资源优先）**：原设计是"钩子置标志位 + UI 轮询"，计划初稿用的是 80 ms `DispatcherTimer`（每秒唤醒 12.5 次，常驻不划算）。改为钩子在回调里 `SynchronizationContext.Post` 回 UI 线程，彻底去掉轮询定时器。spec §4.0/§4.2/§4.3 已同步更新。
+8. **§4.4 视图模型改为增量通知**：`PanelView` / `CardView` 从不可变 record 改成实现 `INotifyPropertyChanged` 的类，1 秒心跳只更新时钟、倒计时、更新龄三段文本，不重设 `DataContext`（否则每秒重建整个可视树）。
+9. **倒计时向上取整**：原 `FormatCountdown` 按截断分钟计算，面板弹出 1 秒后计数就会跳掉一整分钟。改为向上取整到分钟，并加测试锁住。
+10. **§9 构建 + 内存策略**：publish 追加 `-p:PublishReadyToRun=true`；csproj 设 `ConcurrentGarbageCollection=false` / `ServerGarbageCollection=false`，去掉后台 GC 线程。
+11. **§8.2 验收指标**：内存门槛从"< 60 MB"改为更可验证的"工作集 ≤ 80 MB + 空闲 60 秒 CPU 增量 < 0.06 s"，并新增句柄泄漏检查。

@@ -84,6 +84,18 @@ Program/App ──┬── Input/DoubleCtrlHook ──┐
 
 每个单元的职责、用法、依赖：
 
+### 4.0 资源占用（第一优先级约束）
+
+这是常驻托盘工具，用户明确要求"最小程度占用内存或 CPU"，因此架构按以下规则取舍：
+
+- **空闲即零**：面板隐藏时不得存在任何定时器、后台线程或轮询循环。常驻的只有两个低级钩子和一个托盘图标，CPU 占用为 0。
+- **按需读盘**：只有用户双击 Ctrl、点托盘、点刷新按钮时才读一次 session 文件尾部（通常 256 KB，最多 4 MB）。没有周期性后台刷新。
+- **心跳只改文本**：面板可见期间用 1 秒定时器刷新时钟、倒计时、"N 秒前更新"；只发属性变更通知，不重设 `DataContext`、不重建可视树、不读文件。面板隐藏时立即停止。
+- **缓冲复用**：尾读缓冲走 `ArrayPool<byte>`，避免 4 MB 级数组进 LOH（大对象堆）。
+- **图标去抖**：托盘图标只在百分比变化时重画（每次重画会新建 `Bitmap` + `HICON`）。
+- **钩子不轮询**：低级钩子回调运行在安装它的 UI 线程上，命中后直接 `SynchronizationContext.Post` 一个动作回来，下一个消息即处理——比轮询快得多且空闲时零唤醒。
+- **预算**：空闲 CPU 平均 < 0.1%，工作集 ≤ 80 MB（框架依赖发布）；面板可见 CPU < 1%。
+
 ### 4.1 `Data/CodexUsageReader.cs` + `Data/UsageSnapshot.cs`
 
 - **做什么**：把 3.3 的读取策略实现为 `UsageSnapshot? Read()`。`UsageSnapshot` 是不可变记录，
@@ -95,27 +107,29 @@ Program/App ──┬── Input/DoubleCtrlHook ──┐
 ### 4.2 `Input/DoubleCtrlHook.cs`
 
 - **做什么**：`SetWindowsHookEx(WH_KEYBOARD_LL)` 全局键盘钩子。Ctrl 按下后 400 ms 内出现
-  第二次**独立**按下 → 置 `ToggleRequested` 标志；Esc 且面板可见 → 置 `DismissRequested` 标志。
-- **怎么用**：`hook.Start()` / `hook.Stop()`，暴露 `bool? ConsumeToggle()`、`bool? ConsumeDismiss()`
-  由 UI 线程轮询。
+  第二次**独立**按下 → 触发"切换面板"；Esc 且面板可见 → 触发"关闭面板"。
+- **怎么用**：`hook.Start()` / `hook.Stop()`，构造时传入 `onToggle` / `onEscape` 两个回调。
+  命中后钩子内部用 `SynchronizationContext.Post` 把回调送回 UI 线程（见 4.0），调用方不需要轮询。
 - **依赖**：Win32 P/Invoke。
 - **两条必须遵守的规则**：
   - 过滤自动重复：`KBDLLHOOKSTRUCT.flags` 的 `LLKHF_UP` 位区分按下/抬起，并用
     `GetKeyState(VK_CONTROL) & 0x8000` 判断"前一次是否仍按住"，长按 Ctrl 只算一次按下。
-  - 回调内**只读写标志位并立即 `CallNextHookEx`**。低级钩子超时预算约 300 ms，超时 Windows
+  - 回调内**只做判断和 `Post`，然后立即 `CallNextHookEx`**。低级钩子超时预算约 300 ms，超时 Windows
     会静默卸载钩子导致功能失效，因此绝不在回调中触碰 UI 或磁盘。
 
 ### 4.3 `Input/ClickAwayHook.cs`
 
 - **做什么**：低级鼠标钩子，仅在面板可见期间挂载。检测按下事件，坐标落在面板矩形外 →
-  置 `DismissRequested`。
+  触发"关闭面板"（同样通过 `Post` 回 UI 线程）。
 - **为什么需要**：见 5.1，面板不抢焦点，WPF 的 `Deactivated` 不会触发。
 
 ### 4.4 `Ui/PanelWindow.xaml(.cs)` + `Ui/PanelViewModel.cs` + `Ui/Theme.xaml`
 
 - **做什么**：渲染快照，暴露 `ShowNear(Point)` / `Hide()`。ViewModel 只做快照到显示字符串的转换
-  （倒计时格式化、颜色档位、"N 秒前更新"），不含 IO。
-- **依赖**：`UsageSnapshot`、两个钩子的标志位。
+  （倒计时格式化、颜色档位、"N 秒前更新"），不含 IO。时钟、倒计时、更新龄这三个随时间变化的属性
+  实现 `INotifyPropertyChanged`，1 秒心跳只触发它们的变更通知；静态内容（标题、段数、配色）
+  一次绑定后不再改动，不重设 `DataContext`。
+- **依赖**：`UsageSnapshot`、两个钩子的回调。
 
 ### 4.5 `Tray/TrayManager.cs`
 
@@ -233,7 +247,8 @@ WPF 属性：`WindowStyle=None`、`AllowsTransparency=True`、`ResizeMode=NoResi
 - [ ] 托盘四项菜单均可用；"暂停全局热键"后双击 Ctrl 无反应
 - [ ] 开机自启勾选后重启仍在；取消勾选后注册表项消失
 - [ ] 删除 `~/.codex/sessions` 场景下面板显示无数据文案而非崩溃
-- [ ] 任务管理器：常驻内存 < 60 MB；面板弹出到出数据 < 150 ms
+- [ ] 面板弹出到出数据 < 150 ms
+- [ ] 资源：面板隐藏静置 60 秒，CPU 增量 < 0.06 s；工作集 ≤ 80 MB（见 4.0）
 
 ## 9. 技术选型与构建
 
@@ -258,8 +273,8 @@ E:\Viding\tip page\
 ```
 
 - 交付命令：
-  - 常规：`dotnet publish src\CodexUsagePanel -c Release -r win-x64 --self-contained false`
-    → 单 exe 数 MB，需 .NET 8 Desktop Runtime（本机已具备）
+  - 常规：`dotnet publish src\CodexUsagePanel -c Release -r win-x64 --self-contained false -p:PublishReadyToRun=true`
+    → 单 exe 数 MB，需 .NET 8 Desktop Runtime（本机已具备）；R2R 减少启动 JIT 开销
   - 拷到无运行时机器：追加 `--self-contained true -p:PublishSingleFile=true`
 
 ## 10. 已知风险
