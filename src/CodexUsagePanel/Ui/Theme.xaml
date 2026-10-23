@@ -1,0 +1,23 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Color x:Key="BgColor">#0E1416</Color>
+    <Color x:Key="CardColor">#131B1E</Color>
+    <Color x:Key="LineColor">#1E2A2E</Color>
+    <Color x:Key="TextColor">#E8F0EE</Color>
+    <Color x:Key="MutedColor">#6B8080</Color>
+    <Color x:Key="MintColor">#4ADEB4</Color>
+    <Color x:Key="MistColor">#7EB3F0</Color>
+    <Color x:Key="AmberColor">#F0A860</Color>
+    <Color x:Key="CoralColor">#EF6B6B</Color>
+
+    <SolidColorBrush x:Key="BgBrush" Color="{StaticResource BgColor}"/>
+    <SolidColorBrush x:Key="CardBrush" Color="{StaticResource CardColor}"/>
+    <SolidColorBrush x:Key="LineBrush" Color="{StaticResource LineColor}"/>
+    <SolidColorBrush x:Key="TextBrush" Color="{StaticResource TextColor}"/>
+    <SolidColorBrush x:Key="MutedBrush" Color="{StaticResource MutedColor}"/>
+    <SolidColorBrush x:Key="MintBrush" Color="{StaticResource MintColor}"/>
+    <SolidColorBrush x:Key="MistBrush" Color="{StaticResource MistColor}"/>
+    <SolidColorBrush x:Key="AmberBrush" Color="{StaticResource AmberColor}"/>
+    <SolidColorBrush x:Key="CoralBrush" Color="{StaticResource CoralColor}"/>
+    <SolidColorBrush x:Key="DimBarBrush" Color="#223034"/>
+</ResourceDictionary>
