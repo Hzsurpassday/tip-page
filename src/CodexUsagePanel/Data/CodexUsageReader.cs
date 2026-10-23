@@ -18,6 +18,10 @@ public sealed class CodexUsageReader
 
     private readonly string _sessionsRoot;
 
+    private UsageSnapshot? _cached;
+    private DateTime _lastScanAt = DateTime.MinValue;
+    private bool _hasScanned;
+
     public CodexUsageReader(string sessionsRoot, TimeSpan throttle, Func<DateTime>? now = null)
     {
         _sessionsRoot = sessionsRoot;
@@ -25,7 +29,7 @@ public sealed class CodexUsageReader
         Now = now ?? (() => DateTime.Now);
     }
 
-    /// <summary>缓存/节流间隔；本类只保存，由上层（Task 4）决定何时调用 <see cref="Read"/>。</summary>
+    /// <summary>节流间隔：距上次扫描不足该间隔时，<see cref="Read"/> 直接返回缓存结果。</summary>
     public TimeSpan Throttle { get; }
 
     public Func<DateTime> Now { get; }
@@ -36,15 +40,37 @@ public sealed class CodexUsageReader
     /// <summary>累计目录枚举次数。</summary>
     public int DirectoryScanCount { get; private set; }
 
+    /// <summary>
+    /// 清空缓存并让下一次 <see cref="Read"/> 立即重新扫描（供面板的刷新按钮调用）。
+    /// 纯同步、只置状态，不安排任何定时器或后台任务。
+    /// </summary>
+    public void InvalidateCache()
+    {
+        _hasScanned = false;
+        _lastScanAt = DateTime.MinValue;
+        _cached = null;
+    }
+
     public UsageSnapshot? Read()
     {
+        var now = Now();
+        if (_hasScanned && now - _lastScanAt < Throttle) return _cached;
+
+        _lastScanAt = now;
+        _hasScanned = true;
+        _cached = null;
+
         foreach (var file in ListCandidates())
         {
             var snapshot = TryReadFile(file);
-            if (snapshot is not null) return snapshot;
+            if (snapshot is not null)
+            {
+                _cached = snapshot;
+                break;
+            }
         }
 
-        return null;
+        return _cached;
     }
 
     private List<FileInfo> ListCandidates()
@@ -55,8 +81,13 @@ public sealed class CodexUsageReader
 
         try
         {
+            // IgnoreInaccessible：遇到无权限的子目录时跳过继续枚举，不丢弃已找到的结果
             return new DirectoryInfo(_sessionsRoot)
-                .EnumerateFiles("rollout-*.jsonl", SearchOption.AllDirectories)
+                .EnumerateFiles("rollout-*.jsonl", new EnumerationOptions
+                {
+                    RecurseSubdirectories = true,
+                    IgnoreInaccessible = true,
+                })
                 .OrderByDescending(f => f.LastWriteTimeUtc)
                 .Take(MaxCandidateFiles)
                 .ToList();
@@ -122,7 +153,8 @@ public sealed class CodexUsageReader
 
                 stream.Seek(length - take, SeekOrigin.Begin);
 
-                // 复用池化缓冲，避免每次刷新把 256 KB（扩容时 4 MB）丢进 LOH
+                // ArrayPool<byte>.Shared 最大只到 2^20 字节：256 KB 的初始窗口是池化复用，
+                // 4 MB 的扩展窗口会由 Rent 内部新建数组（不池化），无法避免一次 LOH 分配
                 var buffer = ArrayPool<byte>.Shared.Rent(take);
                 try
                 {
