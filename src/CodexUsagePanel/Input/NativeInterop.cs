@@ -18,6 +18,8 @@ internal static class NativeInterop
 
     internal const uint LLKHF_UP = 0x0080;
     internal const int VK_CONTROL = 0x11;
+    internal const int VK_LCONTROL = 0xA2;
+    internal const int VK_RCONTROL = 0xA3;
     internal const int VK_ESCAPE = 0x1B;
 
     internal const int GWL_EXSTYLE = -20;

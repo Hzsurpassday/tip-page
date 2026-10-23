@@ -78,4 +78,17 @@ public class CtrlTapDetectorTests
         detector.Feed(false, false, 1040);
         Assert.True(detector.Feed(true, false, 1400));   // 窗口含边界值
     }
+
+    // 低级键盘钩子对物理 Ctrl 上报的是左右专有码，通用 0x11 只在部分注入路径出现
+    [Theory]
+    [InlineData(0xA2, true)]    // VK_LCONTROL
+    [InlineData(0xA3, true)]    // VK_RCONTROL
+    [InlineData(0x11, true)]    // VK_CONTROL
+    [InlineData(0x1B, false)]   // VK_ESCAPE
+    [InlineData(0xA0, false)]   // VK_LSHIFT
+    [InlineData(0x41, false)]   // 'A'
+    public void IsCtrlKey_AcceptsBothSideSpecificCodes(int vkCode, bool expected)
+    {
+        Assert.Equal(expected, CtrlTapDetector.IsCtrlKey(vkCode));
+    }
 }

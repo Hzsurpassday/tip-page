@@ -66,7 +66,7 @@ public sealed class DoubleCtrlHook : IDisposable
                 {
                     var data = Marshal.PtrToStructure<NativeInterop.KBDLLHOOKSTRUCT>(lParam);
 
-                    if (data.vkCode == NativeInterop.VK_CONTROL)
+                    if (CtrlTapDetector.IsCtrlKey((int)data.vkCode))
                     {
                         if (_detector.Feed(isDown: !isUp, isRepeat: false, nowMs: Environment.TickCount64))
                         {

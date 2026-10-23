@@ -8,6 +8,10 @@ public sealed class CtrlTapDetector
 
     public CtrlTapDetector(int windowMs) => _windowMs = windowMs;
 
+    // 低级键盘钩子对物理 Ctrl 上报 VK_LCONTROL / VK_RCONTROL，从不给通用 VK_CONTROL
+    public static bool IsCtrlKey(int vkCode) =>
+        vkCode is NativeInterop.VK_CONTROL or NativeInterop.VK_LCONTROL or NativeInterop.VK_RCONTROL;
+
     public bool Feed(bool isDown, bool isRepeat, long nowMs)
     {
         if (!isDown)
