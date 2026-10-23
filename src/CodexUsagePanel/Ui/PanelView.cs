@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using CodexUsagePanel.Data;
 
 namespace CodexUsagePanel.Ui;
@@ -8,6 +9,7 @@ public sealed record BarView(bool On, string AccentKey);
 public sealed class CardView : INotifyPropertyChanged
 {
     private string _countdown;
+    private long _countdownKey = long.MinValue;
 
     public CardView(
         string title,
@@ -65,10 +67,22 @@ public sealed class CardView : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 
     // 每秒只改这一段文本；段数、百分比、配色都不动，避免重建可视树
+    // 倒计时按"分钟桶"缓存，桶不变就不做字符串格式化，心跳期间零分配
     public void Tick(DateTime now)
     {
-        var resetAt = DateTimeOffset.FromUnixTimeSeconds(ResetsAtUnixSeconds).LocalDateTime;
-        Countdown = PanelView.FormatCountdown(resetAt - now);
+        var resetAt = PanelView.LocalResetTime(ResetsAtUnixSeconds);
+        var remaining = resetAt - now;
+        long key = CountdownKey(remaining);
+        if (key == _countdownKey) return;
+        _countdownKey = key;
+        Countdown = PanelView.FormatCountdown(remaining);
+    }
+
+    private static long CountdownKey(TimeSpan remaining)
+    {
+        if (remaining.TotalSeconds <= 0) return long.MinValue + 1;
+        if (remaining.TotalSeconds < 60) return -1;
+        return (long)Math.Ceiling(remaining.TotalSeconds / 60.0);
     }
 }
 
@@ -79,6 +93,8 @@ public sealed class PanelView : INotifyPropertyChanged
     private string _syncLabel;
     private string _syncAccentKey;
     private string _updatedLabel;
+    private long _clockKey = long.MinValue;
+    private long _ageKey = long.MinValue;
 
     public PanelView(
         bool hasData,
@@ -141,9 +157,15 @@ public sealed class PanelView : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 
     // 面板可见时的 1 秒心跳：只发上面几个属性的变更通知，不碰 DataContext、不读文件
+    // 时钟与"几分钟前"都按桶缓存，桶不变时不做任何格式化，避免每秒分配
     public void Tick(DateTime now)
     {
-        Clock = now.ToString("HH:mm");
+        long clockKey = now.Ticks / TimeSpan.TicksPerMinute;
+        if (clockKey != _clockKey)
+        {
+            _clockKey = clockKey;
+            Clock = now.ToString("HH:mm", CultureInfo.InvariantCulture);
+        }
 
         if (!HasData) return;
 
@@ -153,9 +175,24 @@ public sealed class PanelView : INotifyPropertyChanged
         IsSynchronised = synchronised;
         SyncLabel = synchronised ? "已同步" : "快照滞后";
         SyncAccentKey = synchronised ? "Mint" : "Muted";
-        UpdatedLabel = FormatAge(age);
 
-        foreach (var card in Cards) card.Tick(now);
+        long ageKey = AgeKey(age);
+        if (ageKey != _ageKey)
+        {
+            _ageKey = ageKey;
+            UpdatedLabel = FormatAge(age);
+        }
+
+        for (int i = 0; i < Cards.Count; i++) Cards[i].Tick(now);
+    }
+
+    // 把"秒/分钟/小时/天"四个档位编码进一个 long，档位内数值变化才重新格式化
+    private static long AgeKey(TimeSpan age)
+    {
+        if (age.TotalSeconds < 60) return Math.Max(0L, (long)age.TotalSeconds);
+        if (age.TotalMinutes < 60) return 1_000L + (long)age.TotalMinutes;
+        if (age.TotalHours < 24) return 2_000_000L + (long)age.TotalHours;
+        return 3_000_000_000L + (long)age.TotalDays;
     }
 
     private void Set<T>(ref T field, T value, string propertyName)
@@ -167,10 +204,11 @@ public sealed class PanelView : INotifyPropertyChanged
 
     private static readonly string[] WeekdayNames = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
+    /// <remarks>所有 DateTime 必须是本地时间；UTC 会导致倒计时偏移。</remarks>
     public static PanelView Build(UsageSnapshot? snapshot, DateTime now, string planLabel)
     {
         var today = $"{now.Month:00}.{now.Day:00} {WeekdayNames[(int)now.DayOfWeek]}";
-        var clock = now.ToString("HH:mm");
+        var clock = now.ToString("HH:mm", CultureInfo.InvariantCulture);
         var badge = !string.IsNullOrWhiteSpace(planLabel);
 
         if (snapshot is null)
@@ -192,13 +230,10 @@ public sealed class PanelView : INotifyPropertyChanged
         }
 
         var cards = new List<CardView>();
-        bool first = true;
 
         foreach (var window in snapshot.Windows)
         {
-            string slotAccent = first ? "Mint" : "Mist";
-            cards.Add(BuildCard(window, now, slotAccent));
-            first = false;
+            cards.Add(BuildCard(window, now, window.IsWeekly ? "Mist" : "Mint"));
         }
 
         var age = now - snapshot.FileWrittenAt;
@@ -220,7 +255,7 @@ public sealed class PanelView : INotifyPropertyChanged
             writtenAt: snapshot.FileWrittenAt);
     }
 
-    private static CardView BuildCard(UsageWindow window, DateTime now, string slotAccent)
+    private static CardView BuildCard(UsageWindow window, DateTime now, string windowAccent)
     {
         var (title, code) = window switch
         {
@@ -230,14 +265,16 @@ public sealed class PanelView : INotifyPropertyChanged
         };
 
         int used = window.UsedPercentRounded;
-        string accent = used >= 100 ? "Coral" : used >= 80 ? "Amber" : slotAccent;
+        string accent = used >= 100 ? "Coral" : used >= 80 ? "Amber" : windowAccent;
         int filled = window.BarsFilled();
 
         var bars = new List<BarView>(20);
         for (int i = 0; i < 20; i++) bars.Add(new BarView(i < filled, accent));
 
-        var resetAt = DateTimeOffset.FromUnixTimeSeconds(window.ResetsAtUnixSeconds).LocalDateTime;
+        var resetAt = LocalResetTime(window.ResetsAtUnixSeconds);
         var remaining = resetAt - now;
+        var resetDate = resetAt.ToString("yyyy'/'MM'/'dd", CultureInfo.InvariantCulture);
+        var resetClock = resetAt.ToString("HH':'mm", CultureInfo.InvariantCulture);
 
         return new CardView(
             title: title,
@@ -248,8 +285,17 @@ public sealed class PanelView : INotifyPropertyChanged
             accentKey: accent,
             bars: bars,
             countdown: FormatCountdown(remaining),
-            resetsAtText: $"{resetAt:yyyy/MM/dd} {WeekdayNames[(int)resetAt.DayOfWeek]} {resetAt:HH:mm}",
+            resetsAtText: $"{resetDate} {WeekdayNames[(int)resetAt.DayOfWeek]} {resetClock}",
             resetsAtUnixSeconds: window.ResetsAtUnixSeconds);
+    }
+
+    // 重置时间是外部数据：越界的 Unix 秒会抛异常，这里统一兜底成 MinValue（显示为"即将重置"）
+    private const long MaxUnixSeconds = 253402300799;
+
+    internal static DateTime LocalResetTime(long unixSeconds)
+    {
+        if (unixSeconds < 0 || unixSeconds > MaxUnixSeconds) return DateTime.MinValue;
+        return DateTimeOffset.FromUnixTimeSeconds(unixSeconds).LocalDateTime;
     }
 
     internal static string FormatCountdown(TimeSpan remaining)
@@ -258,10 +304,10 @@ public sealed class PanelView : INotifyPropertyChanged
         if (remaining.TotalSeconds < 60) return "不足 1 分钟";
 
         // 向上取整到分钟：否则弹出后 1 秒计数就会跳掉一整分钟
-        int totalMinutes = (int)Math.Ceiling(remaining.TotalSeconds / 60.0);
-        int days = totalMinutes / (24 * 60);
-        int hours = totalMinutes % (24 * 60) / 60;
-        int minutes = totalMinutes % 60;
+        long totalMinutes = (long)Math.Ceiling(remaining.TotalSeconds / 60.0);
+        long days = totalMinutes / (24 * 60);
+        long hours = totalMinutes % (24 * 60) / 60;
+        long minutes = totalMinutes % 60;
 
         if (days > 0) return $"{days}天 {hours}小时 {minutes}分";
         if (hours > 0) return $"{hours}小时 {minutes}分";

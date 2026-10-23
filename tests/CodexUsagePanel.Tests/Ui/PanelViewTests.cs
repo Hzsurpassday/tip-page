@@ -198,4 +198,40 @@ public class PanelViewTests
         Assert.Equal(string.Empty, view.UpdatedLabel);
         Assert.Empty(view.Cards);
     }
+
+    [Fact]
+    public void BarsFollowUsedPercentNotRemaining()
+    {
+        // used=40 时只剩 8 段；若误按"剩余 60%"填充会得到 12 段
+        var view = PanelView.Build(Snapshot(fiveUsed: 40, weekUsed: 32, writtenAt: Now), Now, "PLUS");
+
+        Assert.Equal(8, view.Cards[0].Bars.Count(b => b.On));
+    }
+
+    [Theory]
+    [InlineData(120, true)]
+    [InlineData(121, false)]
+    public void SyncThresholdIsExactlyTwoMinutes(int seconds, bool expected)
+    {
+        var view = PanelView.Build(Snapshot(49, 32, Now.AddSeconds(-seconds)), Now, "PLUS");
+
+        Assert.Equal(expected, view.IsSynchronised);
+    }
+
+    [Fact]
+    public void WeeklyOnlySnapshot_FallsBackToMist()
+    {
+        var snapshot = new UsageSnapshot(
+            null,
+            new UsageWindow(20, 10080, new DateTimeOffset(Now.AddDays(5)).ToUnixTimeSeconds()),
+            "0",
+            @"C:\x\rollout.jsonl",
+            Now);
+
+        var view = PanelView.Build(snapshot, Now, "PLUS");
+
+        var card = Assert.Single(view.Cards);
+        Assert.Equal("Mist", card.AccentKey);
+        Assert.Equal("本周额度", card.Title);
+    }
 }
