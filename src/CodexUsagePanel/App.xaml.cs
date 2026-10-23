@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Interop;
 using CodexUsagePanel.Data;
 using CodexUsagePanel.Input;
 using CodexUsagePanel.Settings;
@@ -24,6 +25,9 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // 常驻托盘工具优先省内存：软件渲染让面板省下约 90MB 的 D3D 缓冲，代价只在重绘瞬间
+        System.Windows.Media.RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
 
         _singleInstance = new Mutex(initiallyOwned: true, @"Local\CodexUsagePanel.SingleInstance", out bool created);
         if (!created)

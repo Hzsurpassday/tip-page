@@ -100,6 +100,8 @@ public partial class PanelWindow : Window
 
         // 自动隐藏与托盘/热键隐藏共用同一条清理路径：停表、收起后再通知外部释放鼠标钩子
         _onHidden?.Invoke();
+
+        NativeInterop.TrimWorkingSet();
     }
 
     protected override void OnSourceInitialized(EventArgs e)

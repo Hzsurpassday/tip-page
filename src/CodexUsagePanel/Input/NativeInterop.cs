@@ -117,6 +117,16 @@ internal static class NativeInterop
     internal static IntPtr SetWindowLongPtr(IntPtr hWnd, int index, IntPtr value) =>
         IntPtr.Size == 8 ? SetWindowLongPtr64(hWnd, index, value) : SetWindowLongPtr32(hWnd, index, value);
 
+    [DllImport("psapi.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EmptyWorkingSet(IntPtr hProcess);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    // 面板是 10 秒级的浮层：收起后把工作集还给系统，常驻占用才能回到空闲水位
+    internal static void TrimWorkingSet() => EmptyWorkingSet(GetCurrentProcess());
+
     internal static RECT GetWorkAreaNear(int screenX, int screenY)
     {
         var monitor = MonitorFromPoint(new POINT { X = screenX, Y = screenY }, MONITOR_DEFAULTTONEAREST);
