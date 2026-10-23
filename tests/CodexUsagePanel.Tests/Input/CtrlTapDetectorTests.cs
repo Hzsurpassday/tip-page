@@ -52,4 +52,30 @@ public class CtrlTapDetectorTests
         detector.Feed(false, false, 1070);
         Assert.False(detector.Feed(true, false, 1100));
     }
+
+    [Fact]
+    public void SecondDownWithoutRelease_IsIgnored()
+    {
+        var detector = new CtrlTapDetector(400);
+        Assert.False(detector.Feed(true, false, 1000));
+        Assert.False(detector.Feed(true, false, 1010));
+    }
+
+    [Fact]
+    public void ExplicitRepeatFlag_IsIgnored()
+    {
+        var detector = new CtrlTapDetector(400);
+        detector.Feed(true, false, 1000);
+        detector.Feed(false, false, 1050);
+        Assert.False(detector.Feed(true, isRepeat: true, nowMs: 1100));
+    }
+
+    [Fact]
+    public void ExactlyAtWindowBoundary_Triggers()
+    {
+        var detector = new CtrlTapDetector(400);
+        detector.Feed(true, false, 1000);
+        detector.Feed(false, false, 1040);
+        Assert.True(detector.Feed(true, false, 1400));   // 窗口含边界值
+    }
 }

@@ -11,6 +11,7 @@ public sealed class DoubleCtrlHook : IDisposable
     private readonly SynchronizationContext? _uiContext;
     private readonly NativeInterop.LowLevelProc _callback;   // 必须持有引用，防止被 GC 回收
     private IntPtr _handle = IntPtr.Zero;
+    private bool _stopped;
 
     public DoubleCtrlHook(int windowMs, Func<bool> isPanelVisible, Action onToggle, Action onEscape)
     {
@@ -37,35 +38,49 @@ public sealed class DoubleCtrlHook : IDisposable
 
     public void Stop()
     {
+        _stopped = true;   // 先置位：已排队的 Post 与后续回调一律无效
+
         if (_handle == IntPtr.Zero) return;
-        NativeInterop.UnhookWindowsHookEx(_handle);
-        _handle = IntPtr.Zero;
+
+        // 卸载失败说明钩子仍存活，保留句柄以便再次卸载；_stopped 已保证不再产生副作用
+        if (NativeInterop.UnhookWindowsHookEx(_handle))
+        {
+            _handle = IntPtr.Zero;
+        }
     }
 
     public void Dispose() => Stop();
 
     private IntPtr Handle(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode >= 0)
+        // 回调体必须整体兜住异常：任何异常穿越到原生代码都会 fail-fast 崩溃整个进程
+        try
         {
-            bool isUp = wParam == NativeInterop.WM_KEYUP || wParam == NativeInterop.WM_SYSKEYUP;
-
-            if (isUp || wParam == NativeInterop.WM_KEYDOWN || wParam == NativeInterop.WM_SYSKEYDOWN)
+            if (nCode >= 0)
             {
-                var data = Marshal.PtrToStructure<NativeInterop.KBDLLHOOKSTRUCT>(lParam);
+                bool isUp = wParam == NativeInterop.WM_KEYUP || wParam == NativeInterop.WM_SYSKEYUP;
 
-                if (data.vkCode == NativeInterop.VK_CONTROL)
+                if (isUp || wParam == NativeInterop.WM_KEYDOWN || wParam == NativeInterop.WM_SYSKEYDOWN)
                 {
-                    if (_detector.Feed(isDown: !isUp, isRepeat: false, nowMs: Environment.TickCount64))
+                    var data = Marshal.PtrToStructure<NativeInterop.KBDLLHOOKSTRUCT>(lParam);
+
+                    if (data.vkCode == NativeInterop.VK_CONTROL)
                     {
-                        Post(_onToggle);
+                        if (_detector.Feed(isDown: !isUp, isRepeat: false, nowMs: Environment.TickCount64))
+                        {
+                            Post(_onToggle);
+                        }
+                    }
+                    else if (data.vkCode == NativeInterop.VK_ESCAPE && !isUp && _isPanelVisible())
+                    {
+                        Post(_onEscape);
                     }
                 }
-                else if (data.vkCode == NativeInterop.VK_ESCAPE && !isUp && _isPanelVisible())
-                {
-                    Post(_onEscape);
-                }
             }
+        }
+        catch
+        {
+            // 静默吞掉：钩子只能保证不抛，绝不能影响键盘消息链
         }
 
         // 回调预算约 300ms，超时 Windows 会静默卸载钩子。这里只做 Post，不做 IO / UI。
@@ -74,12 +89,20 @@ public sealed class DoubleCtrlHook : IDisposable
 
     private void Post(Action action)
     {
+        if (_stopped) return;
+
         if (_uiContext is null)
         {
             action();
             return;
         }
 
-        _uiContext.Post(static state => ((Action)state!)(), action);
+        // 已排队的回调在 Stop 之后落地时同样丢弃
+        _uiContext.Post(static state =>
+        {
+            var (hook, act) = ((DoubleCtrlHook, Action))state!;
+            if (hook._stopped) return;
+            act();
+        }, (this, action));
     }
 }
