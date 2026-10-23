@@ -25,6 +25,9 @@ public partial class PanelWindow : Window
         // 只在面板可见时跑，避免常驻空转（隐藏时由 HidePanel 显式 Stop）
         _tick = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromSeconds(1) };
         _tick.Tick += OnTick;
+
+        // 任何路径关闭窗口都要停表，不能只靠 HidePanel
+        Closed += (_, _) => _tick.Stop();
     }
 
     public bool IsPanelVisible => IsVisible;
@@ -39,15 +42,22 @@ public partial class PanelWindow : Window
             double physicalPerDip = dpi.DpiScaleX;
 
             return (
-                (int)(Left * physicalPerDip),
-                (int)(Top * physicalPerDip),
-                (int)((Left + ActualWidth) * physicalPerDip),
-                (int)((Top + ActualHeight) * physicalPerDip));
+                (int)Math.Floor(Left * physicalPerDip),
+                (int)Math.Floor(Top * physicalPerDip),
+                (int)Math.Ceiling((Left + ActualWidth) * physicalPerDip),
+                (int)Math.Ceiling((Top + ActualHeight) * physicalPerDip));
         }
     }
 
     public void ShowPanel(PanelView view, int autoHideSeconds)
     {
+        // 已可见时 Show() 不会再走 DPI 校正，先收起以便走完整流程
+        if (IsVisible)
+        {
+            _tick.Stop();
+            Hide();
+        }
+
         DataContext = view;
         _autoHideSeconds = autoHideSeconds;
 
@@ -102,7 +112,15 @@ public partial class PanelWindow : Window
     private void OnTick(object? sender, EventArgs e)
     {
         // 只把新的时间交给视图做属性级更新；不重设 DataContext
-        _onTimeTick(DateTime.Now);
+        try
+        {
+            _onTimeTick(DateTime.Now);
+        }
+        catch
+        {
+            // 心跳失败就收起面板，不让异常冒到 Dispatcher
+            HidePanel();
+        }
 
         if ((DateTime.UtcNow - _shownAt).TotalSeconds >= _autoHideSeconds) HidePanel();
     }
