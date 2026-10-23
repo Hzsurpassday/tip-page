@@ -1,0 +1,15 @@
+## .NET / Visual Studio
+bin/
+obj/
+publish/
+*.user
+*.suo
+.vs/
+
+## 构建产物
+artifacts/
+TestResults/
+
+## 本地调试与临时文件
+*.log
+*.tmp
