@@ -1,4 +1,6 @@
 using System.IO;
+using System.Linq;
+using System.Text.Json;
 using CodexUsagePanel.Settings;
 using Xunit;
 
@@ -67,5 +69,91 @@ public class AppSettingsTests
 
         Assert.Equal(150, settings.DoubleCtrlWindowMs);
         Assert.Equal(120, settings.AutoHideSeconds);
+    }
+
+    [Fact]
+    public void RefreshThrottleSeconds_IsClamped()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var lowPath = Path.Combine(dir, "low.json");
+        var highPath = Path.Combine(dir, "high.json");
+
+        try
+        {
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(lowPath, """{"RefreshThrottleSeconds":1}""");
+            File.WriteAllText(highPath, """{"RefreshThrottleSeconds":9999}""");
+
+            Assert.Equal(5, AppSettings.Load(lowPath).RefreshThrottleSeconds);
+            Assert.Equal(300, AppSettings.Load(highPath).RefreshThrottleSeconds);
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void DefaultPath_EndsWithExpectedSegments()
+    {
+        var expected = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "CodexUsagePanel",
+            "settings.json");
+
+        Assert.EndsWith(expected, AppSettings.DefaultPath(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void MissingFile_DoesNotCreateAnything()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(dir, "settings.json");
+
+        try
+        {
+            var settings = AppSettings.Load(path);
+
+            Assert.Equal(15, settings.RefreshThrottleSeconds);
+            Assert.False(File.Exists(path));
+            Assert.False(Directory.Exists(dir));
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Save_WritesExactlyTheSevenDocumentedFields()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(dir, "settings.json");
+
+        try
+        {
+            new AppSettings().Save(path);
+
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            var names = document.RootElement.EnumerateObject().Select(p => p.Name).ToArray();
+
+            Assert.Equal(
+                new[]
+                {
+                    "DoubleCtrlWindowMs",
+                    "AutoHideSeconds",
+                    "RefreshThrottleSeconds",
+                    "PlanLabel",
+                    "FixedPositionEnabled",
+                    "FixedPositionX",
+                    "FixedPositionY"
+                },
+                names);
+            Assert.Equal(7, names.Length);
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
     }
 }

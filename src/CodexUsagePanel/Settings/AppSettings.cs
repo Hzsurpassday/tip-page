@@ -1,6 +1,5 @@
 using System.IO;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace CodexUsagePanel.Settings;
 
@@ -9,8 +8,7 @@ public sealed class AppSettings
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
-        PropertyNameCaseInsensitive = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.Never
+        PropertyNameCaseInsensitive = true
     };
 
     public int DoubleCtrlWindowMs { get; set; } = 400;
@@ -47,7 +45,7 @@ public sealed class AppSettings
             TryBackup(path);
             return new AppSettings();
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return new AppSettings();
         }
@@ -56,11 +54,36 @@ public sealed class AppSettings
         return settings;
     }
 
+    /// <summary>Writes the current values to <paramref name="path"/>.</summary>
+    /// <remarks>A failed write is deliberately ignored rather than crashing the tray app.</remarks>
     public void Save(string path)
     {
         Normalize();
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, JsonSerializer.Serialize(this, JsonOptions));
+
+        var json = JsonSerializer.Serialize(this, JsonOptions);
+        var tmpPath = path + ".tmp";
+
+        try
+        {
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            File.WriteAllText(tmpPath, json);
+            File.Move(tmpPath, path, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(tmpPath)) File.Delete(tmpPath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
     }
 
     private void Normalize()
@@ -77,7 +100,7 @@ public sealed class AppSettings
         {
             File.Copy(path, path + ".bak", overwrite: true);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
         }
     }
