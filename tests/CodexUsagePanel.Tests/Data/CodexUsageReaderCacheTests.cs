@@ -15,12 +15,13 @@ public class CodexUsageReaderCacheTests
         temp.WriteSession(@"2026\10\09\rollout-a.jsonl", Line + "\n");
 
         var reader = new CodexUsageReader(temp.Root, TimeSpan.FromSeconds(15));
-        reader.Read();
+        var first = reader.Read();
         int reads = reader.DiskReadCount;
         int scans = reader.DirectoryScanCount;
 
-        reader.Read();
+        var second = reader.Read();
 
+        Assert.Same(first, second);
         Assert.Equal(reads, reader.DiskReadCount);
         Assert.Equal(scans, reader.DirectoryScanCount);
     }
@@ -37,9 +38,11 @@ public class CodexUsageReaderCacheTests
         int reads = reader.DiskReadCount;
 
         now = now.AddSeconds(16);
-        reader.Read();
+        temp.WriteSession(@"2026\10\09\rollout-a.jsonl", Line.Replace("10.0", "11.0") + "\n");
+        var snapshot = reader.Read();
 
         Assert.True(reader.DiskReadCount > reads);
+        Assert.Equal(11.0, snapshot!.Primary!.UsedPercent);
     }
 
     [Fact]

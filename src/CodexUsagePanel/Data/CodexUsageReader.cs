@@ -9,6 +9,7 @@ namespace CodexUsagePanel.Data;
 /// 把窗口内的行交给 <see cref="RateLimitsParser"/>。
 /// 单次读取上限 4 MB：绝不整读一个上百 MB 的 session 文件。
 /// </summary>
+/// <remarks>非线程安全：字段无同步，只在 UI 线程调用。</remarks>
 public sealed class CodexUsageReader
 {
     private const int InitialTailBytes = 256 * 1024;
@@ -82,11 +83,13 @@ public sealed class CodexUsageReader
         try
         {
             // IgnoreInaccessible：遇到无权限的子目录时跳过继续枚举，不丢弃已找到的结果
+            // AttributesToSkip=None：默认会跳过隐藏/系统目录，这里要与 SearchOption.AllDirectories 保持一致
             return new DirectoryInfo(_sessionsRoot)
                 .EnumerateFiles("rollout-*.jsonl", new EnumerationOptions
                 {
                     RecurseSubdirectories = true,
                     IgnoreInaccessible = true,
+                    AttributesToSkip = FileAttributes.None,
                 })
                 .OrderByDescending(f => f.LastWriteTimeUtc)
                 .Take(MaxCandidateFiles)
