@@ -21,6 +21,8 @@ public sealed class ClickAwayHook : IDisposable
 
     public void Start()
     {
+        _stopped = false;   // 允许暂停后恢复；Stop 之前排队的动作在 Stop 时已被丢弃
+
         if (_handle != IntPtr.Zero) return;
 
         _handle = NativeInterop.SetWindowsHookEx(

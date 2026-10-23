@@ -25,6 +25,8 @@ public sealed class DoubleCtrlHook : IDisposable
 
     public bool Start()
     {
+        _stopped = false;   // 允许暂停后恢复；Stop 之前排队的动作在 Stop 时已被丢弃
+
         if (_handle != IntPtr.Zero) return true;
 
         _handle = NativeInterop.SetWindowsHookEx(
