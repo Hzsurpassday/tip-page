@@ -11,8 +11,20 @@ public static class AutoStart
 
     public static bool IsEnabled()
     {
-        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
-        return key?.GetValue(ValueName) is string value && value.Length > 0;
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
+            return key?.GetValue(ValueName) is string value && value.Length > 0;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // 读注册表被拒时按"未启用"处理：这个方法在托盘构造期调用，抛异常会直接杀掉启动流程
+            return false;
+        }
+        catch (System.Security.SecurityException)
+        {
+            return false;
+        }
     }
 
     public static bool Set(bool enabled, string exePath)

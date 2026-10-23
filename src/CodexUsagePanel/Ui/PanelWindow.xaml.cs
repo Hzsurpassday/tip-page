@@ -12,15 +12,17 @@ public partial class PanelWindow : Window
     private readonly Action _onRefresh;
     private readonly Action _onOpenSettings;
     private readonly Action<DateTime> _onTimeTick;
+    private readonly Action? _onHidden;
     private int _autoHideSeconds;
     private DateTime _shownAt;
 
-    public PanelWindow(Action onRefresh, Action onOpenSettings, Action<DateTime> onTimeTick)
+    public PanelWindow(Action onRefresh, Action onOpenSettings, Action<DateTime> onTimeTick, Action? onHidden = null)
     {
         InitializeComponent();
         _onRefresh = onRefresh;
         _onOpenSettings = onOpenSettings;
         _onTimeTick = onTimeTick;
+        _onHidden = onHidden;
 
         // 只在面板可见时跑，避免常驻空转（隐藏时由 HidePanel 显式 Stop）
         _tick = new DispatcherTimer(DispatcherPriority.Normal) { Interval = TimeSpan.FromSeconds(1) };
@@ -95,6 +97,9 @@ public partial class PanelWindow : Window
     {
         _tick.Stop();
         Hide();
+
+        // 自动隐藏与托盘/热键隐藏共用同一条清理路径：停表、收起后再通知外部释放鼠标钩子
+        _onHidden?.Invoke();
     }
 
     protected override void OnSourceInitialized(EventArgs e)

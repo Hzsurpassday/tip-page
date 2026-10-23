@@ -37,7 +37,17 @@ public sealed class TrayManager : IDisposable
         _autoStartItem.Click += (_, _) =>
         {
             bool requested = _autoStartItem.IsChecked;
-            if (!AutoStart.Set(requested, Environment.ProcessPath ?? string.Empty))
+            var exePath = Environment.ProcessPath;
+
+            // 路径拿不到时不能写 "" --tray：那会留下一条看似生效但无法启动的注册表项
+            if (string.IsNullOrEmpty(exePath))
+            {
+                _autoStartItem.IsChecked = !requested;
+                _icon.ShowBalloonTip("开机自启", "无法定位程序路径，开机自启未修改。", BalloonIcon.Warning);
+                return;
+            }
+
+            if (!AutoStart.Set(requested, exePath))
             {
                 _autoStartItem.IsChecked = !requested;
                 _icon.ShowBalloonTip("开机自启", "写入注册表失败，可能被安全软件拦截。", BalloonIcon.Warning);
@@ -75,6 +85,9 @@ public sealed class TrayManager : IDisposable
 
     public void ShowHotkeyWarning() =>
         _icon.ShowBalloonTip("全局热键不可用", "键盘钩子注册失败，请从托盘菜单打开面板。", BalloonIcon.Warning);
+
+    // 让菜单勾选状态与真实的暂停状态保持一致（例如恢复热键失败时回退）
+    public void SyncPauseState(bool paused) => _pauseItem.IsChecked = paused;
 
     public void Dispose() => _icon.Dispose();
 

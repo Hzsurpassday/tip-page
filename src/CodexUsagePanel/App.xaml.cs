@@ -40,7 +40,12 @@ public partial class App : Application
             "sessions");
 
         _reader = new CodexUsageReader(sessionsRoot, TimeSpan.FromSeconds(_settings.RefreshThrottleSeconds));
-        _panel = new PanelWindow(onRefresh: RefreshNow, onOpenSettings: OpenSettingsFolder, onTimeTick: OnTimeTick);
+        // onHidden 覆盖所有隐藏路径（含 10 秒自动隐藏与心跳异常），确保鼠标钩子一定卸载
+        _panel = new PanelWindow(
+            onRefresh: RefreshNow,
+            onOpenSettings: OpenSettingsFolder,
+            onTimeTick: OnTimeTick,
+            onHidden: () => _mouseHook.Stop());
 
         // 两个钩子都在 UI 线程构造，内部会用 SynchronizationContext.Current 把动作 Post 回来
         _mouseHook = new ClickAwayHook(() => _panel.CurrentBoundsPhysical, onClickAway: HidePanel);
@@ -103,10 +108,23 @@ public partial class App : Application
 
     private void TogglePause()
     {
-        _hotkeyPaused = !_hotkeyPaused;
+        if (!_hotkeyPaused)
+        {
+            _keyboardHook.Stop();
+            _hotkeyPaused = true;
+            _tray.SyncPauseState(true);
+            return;
+        }
 
-        if (_hotkeyPaused) _keyboardHook.Stop();
-        else _keyboardHook.Start();
+        if (_keyboardHook.Start())
+        {
+            _hotkeyPaused = false;
+            return;
+        }
+
+        // 重新注册失败：菜单必须回到"已暂停"，否则用户以为热键生效了
+        _tray.SyncPauseState(true);
+        _tray.ShowHotkeyWarning();
     }
 
     private void OpenSettingsFolder()
@@ -114,7 +132,7 @@ public partial class App : Application
         var path = AppSettings.DefaultPath();
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         if (!File.Exists(path)) _settings.Save(path);
-        System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{path}\"");
+        using var _ = System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{path}\"");
     }
 
     private void ExitApplication()
