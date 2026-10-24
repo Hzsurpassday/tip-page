@@ -88,6 +88,30 @@ public class PanelPositionerTests
     }
 
     [Fact]
+    public void FixedPositionWithZeroOffsetLandsExactlyOnTheConfiguredPoint()
+    {
+        var (left, top) = PanelPositioner.Resolve(
+            cursorX: 400, cursorY: 300,
+            workLeft: 0, workTop: 0, workRight: 1920, workBottom: 1040,
+            dpiScale: 1.5, logicalWidth: 720, logicalHeight: 420, offset: 0);
+
+        Assert.Equal(400 / 1.5, left, 3);
+        Assert.Equal(300 / 1.5, top, 3);
+    }
+
+    [Fact]
+    public void FixedPositionStillClampsInsideWorkArea()
+    {
+        var (left, top) = PanelPositioner.Resolve(
+            cursorX: 1900, cursorY: 1030,
+            workLeft: 0, workTop: 0, workRight: 1920, workBottom: 1040,
+            dpiScale: 1.0, logicalWidth: 720, logicalHeight: 420, offset: 0);
+
+        Assert.Equal(1200, left);
+        Assert.Equal(620, top);
+    }
+
+    [Fact]
     public void PanelLargerThanWorkArea_StaysAtWorkAreaOrigin()
     {
         var (left, top) = PanelPositioner.Resolve(

@@ -38,6 +38,18 @@ public sealed class DoubleCtrlHook : IDisposable
         return _handle != IntPtr.Zero;
     }
 
+    /// <summary>强制卸载后重装：回调超时被系统静默移除时，句柄非零也不代表钩子还活着。</summary>
+    public bool ReArm()
+    {
+        var previous = _handle;
+        _handle = IntPtr.Zero;
+
+        // 旧钩子可能已被系统移除，卸载失败也照样丢句柄，否则下次 Start 会一直短路
+        if (previous != IntPtr.Zero) NativeInterop.UnhookWindowsHookEx(previous);
+
+        return Start();
+    }
+
     public void Stop()
     {
         _stopped = true;   // 先置位：已排队的 Post 与后续回调一律无效

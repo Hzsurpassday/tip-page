@@ -73,6 +73,11 @@ public partial class App : Application
 
         // 启动时读一次，让托盘图标一开始就反映当前用量；之后不再有任何后台定时器
         _tray.UpdateIcon(_reader.Read());
+
+        // 启动期的读盘与建窗会把工作集顶高；空闲常驻时把它还给系统，下次唤出再按需换页
+        Dispatcher.BeginInvoke(
+            System.Windows.Threading.DispatcherPriority.ApplicationIdle,
+            new Action(NativeInterop.TrimWorkingSet));
     }
 
     private void TogglePanel()
@@ -86,8 +91,16 @@ public partial class App : Application
         var snapshot = _reader.Read();   // 15 秒节流，命中缓存时不碰磁盘
         var view = PanelView.Build(snapshot, DateTime.Now, _settings.PlanLabel);
         _currentView = view;
-        _panel.ShowPanel(view, _settings.AutoHideSeconds);
+        _panel.ShowPanel(
+            view,
+            _settings.AutoHideSeconds,
+            _settings.FixedPositionEnabled ? (_settings.FixedPositionX, _settings.FixedPositionY) : null);
         _mouseHook.Start();
+
+        // 读盘 + 建视图会让 UI 线程忙过钩子回调的 300ms 预算，系统会静默摘掉钩子；
+        // 每次唤出后强制重装，避免热键在用过几次后失灵
+        if (!_hotkeyPaused) _keyboardHook.ReArm();
+
         _tray.UpdateIcon(snapshot);
     }
 
@@ -120,7 +133,7 @@ public partial class App : Application
             return;
         }
 
-        if (_keyboardHook.Start())
+        if (_keyboardHook.ReArm())
         {
             _hotkeyPaused = false;
             return;
@@ -134,9 +147,18 @@ public partial class App : Application
     private void OpenSettingsFolder()
     {
         var path = AppSettings.DefaultPath();
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        if (!File.Exists(path)) _settings.Save(path);
-        using var _ = System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{path}\"");
+
+        // 目录不可写（只读配置、被安全软件拦截）时不能让异常冒到 Dispatcher
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            if (!File.Exists(path)) _settings.Save(path);
+            using var _ = System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{path}\"");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            _tray.ShowWarning("打开设置目录", $"无法打开设置目录：{path}");
+        }
     }
 
     private void ExitApplication()

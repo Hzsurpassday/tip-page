@@ -84,7 +84,10 @@ public sealed class TrayManager : IDisposable
     }
 
     public void ShowHotkeyWarning() =>
-        _icon.ShowBalloonTip("全局热键不可用", "键盘钩子注册失败，请从托盘菜单打开面板。", BalloonIcon.Warning);
+        ShowWarning("全局热键不可用", "键盘钩子注册失败，请从托盘菜单打开面板。");
+
+    public void ShowWarning(string title, string message) =>
+        _icon.ShowBalloonTip(title, message, BalloonIcon.Warning);
 
     // 让菜单勾选状态与真实的暂停状态保持一致（例如恢复热键失败时回退）
     public void SyncPauseState(bool paused) => _pauseItem.IsChecked = paused;

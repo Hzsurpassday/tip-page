@@ -25,6 +25,11 @@ public static class AutoStart
         {
             return false;
         }
+        catch (System.IO.IOException)
+        {
+            // 注册表被挂载为不可访问时同样按未启用处理，理由同上
+            return false;
+        }
     }
 
     public static bool Set(bool enabled, string exePath)

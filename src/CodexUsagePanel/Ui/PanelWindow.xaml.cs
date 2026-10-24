@@ -51,7 +51,7 @@ public partial class PanelWindow : Window
         }
     }
 
-    public void ShowPanel(PanelView view, int autoHideSeconds)
+    public void ShowPanel(PanelView view, int autoHideSeconds, (double X, double Y)? fixedPosition = null)
     {
         // 已可见时 Show() 不会再走 DPI 校正，先收起以便走完整流程
         if (IsVisible)
@@ -64,13 +64,21 @@ public partial class PanelWindow : Window
         _autoHideSeconds = autoHideSeconds;
 
         var cursor = NativeInterop.GetCursorPosition();
-        var work = NativeInterop.GetWorkAreaNear(cursor.X, cursor.Y);
+
+        // 固定坐标是 DIP，偏移 0 表示窗口左上角落在配置点上；光标模式仍偏移 16px
+        int anchorOffset = fixedPosition.HasValue ? 0 : 16;
+        (int X, int Y) AnchorAt(double scale) => fixedPosition is { } p
+            ? ((int)Math.Round(p.X * scale), (int)Math.Round(p.Y * scale))
+            : (cursor.X, cursor.Y);
+
+        var (anchorX, anchorY) = AnchorAt(VisualTreeHelper.GetDpi(this).DpiScaleX);
+        var work = NativeInterop.GetWorkAreaNear(anchorX, anchorY);
 
         // 先按窗口当前 DPI 摆好：Left/Top 是 DIP，WPF 会用同一 DPI 换算回物理像素，物理位置即正确
         var before = VisualTreeHelper.GetDpi(this).DpiScaleX;
         var (left, top) = PanelPositioner.Resolve(
-            cursor.X, cursor.Y, work.Left, work.Top, work.Right, work.Bottom,
-            before, Width, Height);
+            anchorX, anchorY, work.Left, work.Top, work.Right, work.Bottom,
+            before, Width, Height, anchorOffset);
         Left = left;
         Top = top;
 
@@ -80,9 +88,11 @@ public partial class PanelWindow : Window
         var after = VisualTreeHelper.GetDpi(this).DpiScaleX;
         if (Math.Abs(after - before) > 0.001)
         {
+            var (betterX, betterY) = AnchorAt(after);
+            var correctedWork = NativeInterop.GetWorkAreaNear(betterX, betterY);
             var (correctedLeft, correctedTop) = PanelPositioner.Resolve(
-                cursor.X, cursor.Y, work.Left, work.Top, work.Right, work.Bottom,
-                after, Width, Height);
+                betterX, betterY, correctedWork.Left, correctedWork.Top, correctedWork.Right, correctedWork.Bottom,
+                after, Width, Height, anchorOffset);
             Left = correctedLeft;
             Top = correctedTop;
         }
