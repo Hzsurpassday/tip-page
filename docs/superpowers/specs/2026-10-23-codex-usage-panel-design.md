@@ -158,7 +158,8 @@ WPF 属性：`WindowStyle=None`、`AllowsTransparency=True`、`ResizeMode=NoResi
 
 尺寸固定 720×420（逻辑像素）。位置：取光标所在显示器（`Screen.FromPoint`），弹在光标右下
 偏移 (16, 16)，与 `SystemParameters.WorkArea` 求交后夹回边界，避免溢出屏幕。
-`FixedPosition.Enabled = true` 时改用配置坐标。
+`FixedPosition.Enabled = true` 时改用配置坐标：`FixedPositionX/Y` 是**虚拟屏幕物理像素**，
+即窗口左上角的落点；该点所在显示器的 DPI 只影响窗口的 DIP↔物理换算，不影响落点。
 
 坐标换算约定：Win32 钩子与 `Screen` 给的是**物理像素**，WPF 的 `Left/Top/Width/Height` 是
 **DIP**。统一在弹出时读 `VisualTreeHelper.GetDpi(window)` 做一次物理→DIP 除法换算，

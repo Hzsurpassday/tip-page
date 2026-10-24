@@ -21,6 +21,7 @@ public partial class App : Application
     private TrayManager _tray = null!;
     private PanelView? _currentView;
     private bool _hotkeyPaused;
+    private bool _hotkeyWarningShown;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -99,7 +100,19 @@ public partial class App : Application
 
         // 读盘 + 建视图会让 UI 线程忙过钩子回调的 300ms 预算，系统会静默摘掉钩子；
         // 每次唤出后强制重装，避免热键在用过几次后失灵
-        if (!_hotkeyPaused) _keyboardHook.ReArm();
+        if (!_hotkeyPaused)
+        {
+            if (_keyboardHook.ReArm())
+            {
+                _hotkeyWarningShown = false;
+            }
+            else if (!_hotkeyWarningShown)
+            {
+                // 重装失败等于热键已死；只提示一次，否则每次唤出都弹气泡
+                _hotkeyWarningShown = true;
+                _tray.ShowHotkeyWarning();
+            }
+        }
 
         _tray.UpdateIcon(snapshot);
     }

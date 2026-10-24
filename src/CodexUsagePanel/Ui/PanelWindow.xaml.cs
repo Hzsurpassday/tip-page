@@ -63,15 +63,14 @@ public partial class PanelWindow : Window
         DataContext = view;
         _autoHideSeconds = autoHideSeconds;
 
-        var cursor = NativeInterop.GetCursorPosition();
+        // 固定坐标是虚拟屏幕物理像素：不管窗口落在哪个 DPI 的显示器，都指向同一个像素点
+        var cursor = fixedPosition.HasValue ? default : NativeInterop.GetCursorPosition();
+        int anchorX = fixedPosition is { } p ? (int)Math.Round(p.X) : cursor.X;
+        int anchorY = fixedPosition is { } q ? (int)Math.Round(q.Y) : cursor.Y;
 
-        // 固定坐标是 DIP，偏移 0 表示窗口左上角落在配置点上；光标模式仍偏移 16px
+        // 固定坐标时窗口左上角就落在配置点上；光标模式仍偏移 16px
         int anchorOffset = fixedPosition.HasValue ? 0 : 16;
-        (int X, int Y) AnchorAt(double scale) => fixedPosition is { } p
-            ? ((int)Math.Round(p.X * scale), (int)Math.Round(p.Y * scale))
-            : (cursor.X, cursor.Y);
 
-        var (anchorX, anchorY) = AnchorAt(VisualTreeHelper.GetDpi(this).DpiScaleX);
         var work = NativeInterop.GetWorkAreaNear(anchorX, anchorY);
 
         // 先按窗口当前 DPI 摆好：Left/Top 是 DIP，WPF 会用同一 DPI 换算回物理像素，物理位置即正确
@@ -88,10 +87,8 @@ public partial class PanelWindow : Window
         var after = VisualTreeHelper.GetDpi(this).DpiScaleX;
         if (Math.Abs(after - before) > 0.001)
         {
-            var (betterX, betterY) = AnchorAt(after);
-            var correctedWork = NativeInterop.GetWorkAreaNear(betterX, betterY);
             var (correctedLeft, correctedTop) = PanelPositioner.Resolve(
-                betterX, betterY, correctedWork.Left, correctedWork.Top, correctedWork.Right, correctedWork.Bottom,
+                anchorX, anchorY, work.Left, work.Top, work.Right, work.Bottom,
                 after, Width, Height, anchorOffset);
             Left = correctedLeft;
             Top = correctedTop;

@@ -54,5 +54,10 @@ public static class AutoStart
         {
             return false;
         }
+        catch (System.IO.IOException)
+        {
+            // 与 IsEnabled 同理：写入失败按"未启用"回报，不让菜单点击把异常抛到 Dispatcher
+            return false;
+        }
     }
 }

@@ -44,7 +44,8 @@ public sealed class DoubleCtrlHook : IDisposable
         var previous = _handle;
         _handle = IntPtr.Zero;
 
-        // 旧钩子可能已被系统移除，卸载失败也照样丢句柄，否则下次 Start 会一直短路
+        // 句柄失效（钩子已被系统摘掉）时 Unhook 必然失败，所以失败不代表旧钩子仍存活；
+        // 但若确实仍存活，重装会出现两个钩子、每次按键触发两次——这比热键失灵更难排查
         if (previous != IntPtr.Zero) NativeInterop.UnhookWindowsHookEx(previous);
 
         return Start();
