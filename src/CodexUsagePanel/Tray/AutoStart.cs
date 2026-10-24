@@ -9,12 +9,17 @@ public static class AutoStart
 
     public static string BuildCommand(string exePath) => $"\"{exePath}\" --tray";
 
-    public static bool IsEnabled()
+    public static bool IsEnabled() => IsEnabled(RunKeyPath, ValueName);
+
+    public static bool Set(bool enabled, string exePath) => Set(enabled, exePath, RunKeyPath, ValueName);
+
+    // 键路径可注入只为测试隔离：读写真实的 Run 键会破坏用户已有的自启设置
+    internal static bool IsEnabled(string runKeyPath, string valueName)
     {
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
-            return key?.GetValue(ValueName) is string value && value.Length > 0;
+            using var key = Registry.CurrentUser.OpenSubKey(runKeyPath, writable: false);
+            return key?.GetValue(valueName) is string value && value.Length > 0;
         }
         catch (UnauthorizedAccessException)
         {
@@ -32,17 +37,17 @@ public static class AutoStart
         }
     }
 
-    public static bool Set(bool enabled, string exePath)
+    internal static bool Set(bool enabled, string exePath, string runKeyPath, string valueName)
     {
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true)
-                            ?? Registry.CurrentUser.CreateSubKey(RunKeyPath);
+            using var key = Registry.CurrentUser.OpenSubKey(runKeyPath, writable: true)
+                            ?? Registry.CurrentUser.CreateSubKey(runKeyPath);
 
             if (key is null) return false;
 
-            if (enabled) key.SetValue(ValueName, BuildCommand(exePath));
-            else key.DeleteValue(ValueName, throwOnMissingValue: false);
+            if (enabled) key.SetValue(valueName, BuildCommand(exePath));
+            else key.DeleteValue(valueName, throwOnMissingValue: false);
 
             return true;
         }

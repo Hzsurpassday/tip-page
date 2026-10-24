@@ -33,4 +33,16 @@ public static class PanelPositioner
         // WPF 的 Left/Top 是 DIP，按同一 DPI 换回去物理位置才落在上面算出的点
         return (left / dpiScale, top / dpiScale);
     }
+
+    /// <summary>把 WPF 的 DIP 矩形换算成鼠标钩子比较用的物理像素矩形。</summary>
+    public static (int Left, int Top, int Right, int Bottom) ToPhysicalBounds(
+        double left,
+        double top,
+        double width,
+        double height,
+        double dpiScale) => (
+            (int)Math.Floor(left * dpiScale),
+            (int)Math.Floor(top * dpiScale),
+            (int)Math.Ceiling((left + width) * dpiScale),
+            (int)Math.Ceiling((top + height) * dpiScale));
 }

@@ -111,9 +111,35 @@ public class PanelPositionerTests
         Assert.Equal(620, top);
     }
 
-    [Fact]
-    public void PanelLargerThanWorkArea_StaysAtWorkAreaOrigin()
+    [Theory]
+    [InlineData(1.0)]
+    [InlineData(1.25)]
+    [InlineData(1.5)]
+    [InlineData(2.5)]
+    public void ToPhysicalBounds_ScalesDipsToTheSamePixelsTheWindowOccupies(double scale)
     {
+        var (left, top, right, bottom) = PanelPositioner.ToPhysicalBounds(80, 60, 720, 420, scale);
+
+        Assert.Equal((int)Math.Floor(80 * scale), left);
+        Assert.Equal((int)Math.Floor(60 * scale), top);
+        Assert.Equal((int)Math.Ceiling(800 * scale), right);
+        Assert.Equal((int)Math.Ceiling(480 * scale), bottom);
+        Assert.Equal((int)Math.Ceiling(720 * scale), right - left);
+    }
+
+    [Fact]
+    public void ToPhysicalBounds_FractionalDipsExpandToWholePixels()
+    {
+        var (left, top, right, bottom) = PanelPositioner.ToPhysicalBounds(80.4, 60.4, 720.2, 420.2, 1.25);
+
+        Assert.Equal(100, left);      // floor(100.5)
+        Assert.Equal(75, top);        // floor(75.5)
+        Assert.Equal(1001, right);    // ceil(1000.75)
+        Assert.Equal(601, bottom);    // ceil(600.75)
+    }
+
+    [Fact]
+    public void PanelLargerThanWorkArea_StaysAtWorkAreaOrigin()    {
         var (left, top) = PanelPositioner.Resolve(
             cursorX: 100, cursorY: 100,
             workLeft: 0, workTop: 0, workRight: 800, workBottom: 600,

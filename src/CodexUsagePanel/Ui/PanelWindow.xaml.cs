@@ -41,13 +41,7 @@ public partial class PanelWindow : Window
             if (!IsVisible) return null;
 
             var dpi = VisualTreeHelper.GetDpi(this);
-            double physicalPerDip = dpi.DpiScaleX;
-
-            return (
-                (int)Math.Floor(Left * physicalPerDip),
-                (int)Math.Floor(Top * physicalPerDip),
-                (int)Math.Ceiling((Left + ActualWidth) * physicalPerDip),
-                (int)Math.Ceiling((Top + ActualHeight) * physicalPerDip));
+            return PanelPositioner.ToPhysicalBounds(Left, Top, ActualWidth, ActualHeight, dpi.DpiScaleX);
         }
     }
 
